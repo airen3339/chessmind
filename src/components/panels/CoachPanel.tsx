@@ -4,7 +4,6 @@ import { COACH_OPTIONS } from '../../coach/types';
 import type { CoachEntry } from '../../game/store';
 import { useGame } from '../../game/store';
 import type { Actor, Side } from '../../game/types';
-import { coachProfileFor, useSettings } from '../../settings';
 
 function sideWord(side: Side): string {
   return side === 'w' ? '白方' : '黑方';
@@ -15,8 +14,7 @@ export function CoachPanel() {
   const log = useGame((s) => s.coachLog);
   const summary = useGame((s) => s.coachSummary);
   const players = useGame((s) => s.players);
-  const settings = useSettings((s) => s.settings);
-  const profile = coachProfileFor(settings, players);
+  const profile = useGame((s) => s.gameProfiles.coach);
   const chipsRef = useRef<HTMLDivElement>(null);
 
   // Newest card is at the top, so a new entry arrives where the eye already is.

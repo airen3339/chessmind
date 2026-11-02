@@ -37,8 +37,18 @@ jobs:
           }
           "Building ChessMind $tag"
 
+      # Separate steps preserve each native command's exit status on Windows.
+      - name: Run frontend regressions
+        run: npm test
+
+      - name: Run native regressions
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+
       - name: Build the installer and the portable archive
         run: npm run dist
+
+      - name: Verify bundled licence resources
+        run: npm run verify:bundle
 
       - name: Extract release notes from CHANGELOG.md
         shell: pwsh

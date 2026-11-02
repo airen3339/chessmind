@@ -46,7 +46,7 @@ vi.mock('../src/ai/client', () => ({
 }));
 
 const { requestAiMove } = await import('../src/ai/coordinator');
-const { appendExchange, estimateExchangeTokens } = await import('../src/ai/context');
+const { appendExchange, estimateExchangeTokens, estimateTokens } = await import('../src/ai/context');
 import type { Exchange } from '../src/ai/context';
 
 function cfg(overrides: Partial<AiConfig> = {}): AiConfig {
@@ -108,6 +108,10 @@ beforeEach(() => {
 });
 
 describe('multi-turn continuous context', () => {
+  it('rejects a budget smaller than the fixed prompt before sending HTTP', async () => {
+    await expect(playTurn([], new Chess(), 100)).rejects.toThrow('超过上下文预算');
+    expect(h.sent).toEqual([]);
+  });
   it('keeps a byte-identical prefix across consecutive turns', async () => {
     const chess = new Chess();
     let exchanges: Exchange[] = [];
@@ -152,8 +156,8 @@ describe('multi-turn continuous context', () => {
 
   it('never exceeds the configured token budget', async () => {
     const chess = new Chess();
-    // A tiny budget that the very first exchange already breaches.
-    const budget = 1_200;
+    // The fixed position fits, but a previous full position pack does not.
+    const budget = 1_900;
     let exchanges: Exchange[] = [];
 
     const first = await playTurn(exchanges, chess, budget);
@@ -165,9 +169,8 @@ describe('multi-turn continuous context', () => {
 
     for (const request of h.sent) {
       // System prompt + every message that was actually sent.
-      const sent = request.system.length + request.messages.reduce((n, m) => n + m.content.length, 0);
-      // 2.5 chars/token, plus slack for framing.
-      expect(sent / 2.5).toBeLessThan(budget + 500);
+      const sent = estimateTokens(request.system) + request.messages.reduce((n, m) => n + estimateTokens(m.content), 0);
+      expect(sent).toBeLessThanOrEqual(budget);
     }
     // History must actually have been trimmed, not left to grow forever.
     expect(exchanges.length).toBeLessThan(3);

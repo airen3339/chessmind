@@ -66,20 +66,6 @@ export function gameResultOf(chess: Chess): GameResult | null {
   return null;
 }
 
-export interface PositionFacts {
-  inCheck: boolean;
-  legalCount: number;
-}
-
-/**
- * Facts that describe the position as it stands. Nothing here looks ahead: the
- * model gets the state and the legal moves, and works out the consequences of a
- * move itself.
- */
-export function positionFacts(chess: Chess): PositionFacts {
-  return { inCheck: chess.isCheck(), legalCount: legalMoves(chess).length };
-}
-
 export function boardToAscii(chess: Chess): string {
   const rows: string[] = [];
   const board = chess.board();

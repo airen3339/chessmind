@@ -3,6 +3,7 @@ import { Bot, GraduationCap, LayoutGrid, Users } from 'lucide-react';
 import { useGame } from '../../game/store';
 import { useSettings, coachProfileFor } from '../../settings';
 import { COACH_OPTIONS } from '../../coach/types';
+import type { CoachConfig, CoachOptionKey } from '../../coach/types';
 import type { Actor, Side } from '../../game/types';
 import { Modal } from '../ui/Modal';
 import { Switch } from '../ui/Switch';
@@ -67,10 +68,19 @@ export function NewGameDialog({ open, onClose }: NewGameDialogProps) {
   const currentFen = useGame((s) => s.fen);
   const mode = useGame((s) => s.mode);
   const settings = useSettings((s) => s.settings);
-  const setSideProfile = useSettings((s) => s.setSideProfile);
-  const updateCoach = useSettings((s) => s.updateCoach);
-  const updateCoachOption = useSettings((s) => s.updateCoachOption);
-  const coach = settings.coach;
+  const [selection, setSelection] = useState({ ...settings.aiSelection });
+  const [coach, setCoach] = useState({ ...settings.coach });
+  const setSideProfile = (side: Side, id: string) => setSelection((current) => ({ ...current, [side]: id }));
+  const updateCoach = (patch: Partial<CoachConfig>) => setCoach((current) => ({ ...current, ...patch }));
+  const updateCoachOption = (key: CoachOptionKey, value: boolean) => updateCoach({ [key]: value });
+  useEffect(() => {
+    if (!open) return;
+    const saved = useSettings.getState().settings;
+    setSelection({ ...saved.aiSelection });
+    setCoach({ ...saved.coach });
+    setPreset(PRESETS.find((item) => item.players.w === saved.players.w && item.players.b === saved.players.b)?.id ?? 'white');
+    setConfirmReplace(false);
+  }, [open]);
 
   const chosen = PRESETS.find((item) => item.id === preset) ?? PRESETS[0];
   const needsWhite = chosen.players.w === 'ai';
@@ -78,7 +88,7 @@ export function NewGameDialog({ open, onClose }: NewGameDialogProps) {
   /** There is a live game whose result would be discarded by starting over. */
   const hasLiveGame = mode === 'playing' || mode === 'paused' || mode === 'finished';
   /** Profile that will answer coach requests for the setup chosen above. */
-  const coachPick = coachProfileFor(settings, chosen.players);
+  const coachPick = coachProfileFor({ ...settings, coach, aiSelection: selection }, chosen.players);
 
   const profileLabel = (id: string): string => {
     const profile = settings.aiProfiles.find((item) => item.id === id);
@@ -93,6 +103,7 @@ export function NewGameDialog({ open, onClose }: NewGameDialogProps) {
   }, [open]);
 
   const begin = () => {
+    if (mode === 'setup') return;
     // Starting over mid-game discards the current one; make that explicit
     // instead of silently replacing it. Choosing "从当前局面开始" keeps the
     // position, so it does not need the warning.
@@ -108,6 +119,7 @@ export function NewGameDialog({ open, onClose }: NewGameDialogProps) {
         players: chosen.players,
         orientation: chosen.orientation,
         coach,
+        aiSelection: selection,
       });
       return;
     }
@@ -119,6 +131,7 @@ export function NewGameDialog({ open, onClose }: NewGameDialogProps) {
         players: chosen.players,
         orientation: chosen.orientation,
         coach,
+        aiSelection: selection,
       });
       return;
     }
@@ -126,6 +139,7 @@ export function NewGameDialog({ open, onClose }: NewGameDialogProps) {
       players: chosen.players,
       orientation: chosen.orientation,
       coach,
+      aiSelection: selection,
     });
     onClose();
   };
@@ -161,7 +175,7 @@ export function NewGameDialog({ open, onClose }: NewGameDialogProps) {
                 <span className="field-label">白方 AI</span>
                 <select
                   className="select"
-                  value={settings.aiSelection.w}
+                  value={selection.w}
                   onChange={(event) => setSideProfile('w', event.target.value)}
                 >
                   {settings.aiProfiles.map((profile) => (
@@ -177,7 +191,7 @@ export function NewGameDialog({ open, onClose }: NewGameDialogProps) {
                 <span className="field-label">黑方 AI</span>
                 <select
                   className="select"
-                  value={settings.aiSelection.b}
+                  value={selection.b}
                   onChange={(event) => setSideProfile('b', event.target.value)}
                 >
                   {settings.aiProfiles.map((profile) => (
@@ -190,7 +204,7 @@ export function NewGameDialog({ open, onClose }: NewGameDialogProps) {
             )}
           </div>
           <span className="field-hint">
-            每个配置在「设置 → AI 配置」中管理，可分别保存不同的接口、模型和参数。
+            每个配置在「设置 → AI 配置」中管理。对局开始时固定所选配置，后续修改用于下一局。
           </span>
         </div>
       )}
@@ -285,10 +299,10 @@ export function NewGameDialog({ open, onClose }: NewGameDialogProps) {
 
       <div className="alert">
         {needsWhite && (
-          <div>白方：{profileLabel(settings.aiSelection.w)}</div>
+          <div>白方：{profileLabel(selection.w)}</div>
         )}
         {needsBlack && (
-          <div>黑方：{profileLabel(settings.aiSelection.b)}</div>
+          <div>黑方：{profileLabel(selection.b)}</div>
         )}
         {!needsWhite && !needsBlack && <div>本局没有 AI 参与。</div>}
       </div>

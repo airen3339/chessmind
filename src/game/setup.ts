@@ -90,7 +90,9 @@ export function draftFromFen(fen: string): SetupDraft {
   let tokens: string[];
   try {
     const chess = new Chess(fen, { skipValidation: true });
-    tokens = chess.fen().split(/\s+/);
+    // Keep the supplied EP target so validation can report an inconsistent
+    // target instead of silently accepting a normalised engine position.
+    tokens = fen.trim().split(/\s+/);
     const board = chess.board();
     for (let r = 0; r < 8; r += 1) {
       for (let f = 0; f < 8; f += 1) {
@@ -183,6 +185,18 @@ export interface DraftValidation {
   ok: boolean;
 }
 
+/** A target is possible only immediately after the opposite pawn's double push. */
+export function validEnPassant(draft: SetupDraft): boolean {
+  if (draft.ep === null) return true;
+  const rank = draft.turn === 'w' ? '6' : '3';
+  if (!new RegExp(`^[a-h]${rank}$`).test(draft.ep) || draft.halfmove !== 0) return false;
+  const file = draft.ep[0];
+  const pawn = draft.squares[squareIndex(`${file}${draft.turn === 'w' ? '5' : '4'}`)];
+  const origin = draft.squares[squareIndex(`${file}${draft.turn === 'w' ? '7' : '2'}`)];
+  return !draft.squares[squareIndex(draft.ep)] && !origin &&
+    pawn?.type === 'p' && pawn.color !== draft.turn;
+}
+
 /** Structural + semantic validation that chess.js's validateFen does not cover. */
 export function validateDraft(draft: SetupDraft): DraftValidation {
   const errors: string[] = [];
@@ -205,8 +219,7 @@ export function validateDraft(draft: SetupDraft): DraftValidation {
   if (kingsAdjacent(draft)) errors.push('双方国王不能相邻');
 
   if (whiteKings === 1 && blackKings === 1) {
-    const epOk = draft.ep === null || /^[a-h][36]$/.test(draft.ep);
-    if (!epOk) errors.push('吃过路兵格必须是第 3 或第 6 横线的格子');
+    if (!validEnPassant(draft)) errors.push('吃过路兵格与行棋方、兵的位置或半回合钟不符');
     // chess.js cannot compute moves for structurally impossible boards (e.g. a
     // pawn on the back rank), so only probe the engine once the board is sane.
     if (errors.length === 0) {
@@ -234,7 +247,8 @@ export function validateDraft(draft: SetupDraft): DraftValidation {
         warnings.push(
           `${color === 'w' ? '白方' : '黑方'}${side === 'k' ? '王翼' : '后翼'}易位权无效：王与车必须在初始格，已自动取消`,
         );
-      }    }
+      }
+    }
   }
 
   return { errors, warnings, ok: errors.length === 0 };
@@ -291,6 +305,7 @@ export function toggleSquarePiece(
   const idx = squareIndex(square);
   if (idx < 0) return draft;
   next.squares[idx] = piece ? { ...piece } : null;
+  next.ep = null;
   return next;
 }
 
@@ -303,5 +318,6 @@ export function moveDraftPiece(draft: SetupDraft, from: string, to: string): Set
   if (!piece) return draft;
   next.squares[toIdx] = piece;
   next.squares[fromIdx] = null;
+  next.ep = null;
   return next;
 }

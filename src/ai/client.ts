@@ -54,7 +54,7 @@ export async function runAttempt(opts: {
     },
     error(nextStatus, message) {
       error = message;
-      status = nextStatus;
+      if (nextStatus !== null) status = nextStatus;
     },
   };
 
@@ -67,13 +67,14 @@ export async function runAttempt(opts: {
       signal: opts.signal,
       onEvent: (event) => {
         if (event.kind === 'chunk') body += event.text;
+        else if (event.kind === 'response') status = event.status;
         else if (event.kind === 'error') {
           error = event.message;
           status = event.status ?? null;
         }
       },
     });
-    if (error) return { status, aborted: opts.signal.aborted, error, usage, text, reasoning };
+    if (error || opts.signal.aborted) return { status, aborted: opts.signal.aborted, error, usage, text, reasoning };
     let payload: unknown = null;
     try {
       payload = JSON.parse(body);
@@ -96,6 +97,7 @@ export async function runAttempt(opts: {
     signal: opts.signal,
     onEvent: (event) => {
       if (event.kind === 'chunk') decoder.push(event.text);
+      else if (event.kind === 'response') status = event.status;
       else if (event.kind === 'end') decoder.end();
       else {
         error = event.message;

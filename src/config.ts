@@ -239,10 +239,12 @@ export function sanitizeSettings(raw: unknown): AppSettings {
 }
 
 export function parseSettings(text: string | null): AppSettings {
-  if (!text) return sanitizeSettings(null);
+  if (text === null) return sanitizeSettings(null);
   try {
-    return sanitizeSettings(JSON.parse(text));
+    const raw: unknown = JSON.parse(text);
+    if (!isRecord(raw) || Array.isArray(raw)) throw new Error('设置必须是 JSON 对象');
+    return sanitizeSettings(raw);
   } catch {
-    return sanitizeSettings(null);
+    throw new Error('设置文件内容损坏，已暂停自动保存以保护原配置');
   }
 }

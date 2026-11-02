@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Copy, Eye, EyeOff, Pencil, PlugZap, Plus, Trash2 } from 'lucide-react';
 import { PROTOCOL_OPTIONS, getProvider } from '../../ai/providers';
 import { EFFORT_LABELS, THINKING_EFFORTS } from '../../ai/types';
@@ -13,7 +13,7 @@ import {
 } from '../../ai/effort';
 import { LANG_OPTIONS, BOARD_THEMES } from '../../config';
 import { useSettings, activeProfileOf } from '../../settings';
-import { runAttempt } from '../../ai/client';
+import { runCompatibleAttempt } from '../../ai/compatible';
 import { bridge } from '../../bridge';
 import { Switch } from '../ui/Switch';
 
@@ -130,6 +130,10 @@ export function SettingsPanel() {
   const [testState, setTestState] = useState<
     { kind: 'idle' } | { kind: 'running' } | { kind: 'ok'; message: string } | { kind: 'error'; message: string }
   >({ kind: 'idle' });
+  const testRequest = useRef<AbortController | null>(null);
+  const configKey = JSON.stringify([activeProfile.id, ai]);
+  const currentConfigKey = useRef(configKey);
+  currentConfigKey.current = configKey;
 
   useEffect(() => {
     setRenaming(false);
@@ -147,21 +151,28 @@ export function SettingsPanel() {
     modeOptions?.some((option) => option.value === ai.thinkingMode) ? ai.thinkingMode : 'auto';
 
   useEffect(() => {
+    testRequest.current?.abort();
+    testRequest.current = null;
     setTestState({ kind: 'idle' });
-  }, [ai.protocol, ai.baseUrl, ai.apiKey, ai.model]);
+    return () => { testRequest.current?.abort(); testRequest.current = null; };
+  }, [configKey]);
 
   const runTest = async () => {
+    testRequest.current?.abort();
     setTestState({ kind: 'running' });
     const controller = new AbortController();
+    testRequest.current = controller;
+    const isCurrent = () => testRequest.current === controller && currentConfigKey.current === configKey;
     const timeout = setTimeout(() => controller.abort(), Math.min(ai.timeoutSecs, 60) * 1000);
     try {
-      const result = await runAttempt({
-        cfg: { ...ai, stream: false, maxTokens: 512, retries: 1 },
+      const result = await runCompatibleAttempt({
+        cfg: { ...ai, stream: false, maxTokens: Math.min(ai.maxTokens, 4096), retries: 1, timeoutSecs: Math.min(ai.timeoutSecs, 60) },
         system: 'You are a connection test. Reply with the single word: OK',
         messages: [{ role: 'user', content: 'Reply with the single word: OK' }],
         signal: controller.signal,
         cb: { onReasoning: () => undefined, onText: () => undefined },
       });
+      if (!isCurrent()) return;
       if (result.aborted) {
         setTestState({ kind: 'error', message: '测试已取消' });
       } else if (result.error) {
@@ -171,12 +182,14 @@ export function SettingsPanel() {
         setTestState({ kind: 'ok', message: `连接成功，模型返回：${sample}` });
       }
     } catch (error) {
+      if (!isCurrent()) return;
       setTestState({
         kind: 'error',
         message: error instanceof Error ? error.message : String(error),
       });
     } finally {
       clearTimeout(timeout);
+      if (testRequest.current === controller) testRequest.current = null;
     }
   };
 
@@ -621,8 +634,8 @@ export function SettingsPanel() {
             </button>
           </div>
           <span className="field-hint">
-            整个请求的 token 预算，包含系统提示词、历史回合和当前局面。
-            实测值见「AI 思考」面板的输入 tokens；超出后只会在一次请求里裁掉最旧的回合。
+            输入 token 估算预算，包含系统提示词、历史回合、当前局面和纠错内容，0 表示默认 64000。
+            超出时裁掉旧回合；当前局面本身超出时暂停并提示提高上限。实际用量见「AI 思考」页。
           </span>
         </div>
       </div>

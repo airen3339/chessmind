@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { bridge } from './bridge';
+import { SettingsPersistence } from './settingsPersistence';
 import {
   DEFAULT_AI,
   DEFAULT_SETTINGS,
@@ -36,7 +37,7 @@ interface SettingsStore {
   setSideProfile(side: 'w' | 'b', id: string): void;
 }
 
-let saveTimer: ReturnType<typeof setTimeout> | null = null;
+let loading: Promise<void> | null = null;
 
 /** Called when a background save fails, so the UI can tell the user. */
 let saveErrorHandler: ((message: string) => void) | null = null;
@@ -45,23 +46,14 @@ export function onSettingsSaveError(handler: ((message: string) => void) | null)
   saveErrorHandler = handler;
 }
 
-function scheduleSave(settings: AppSettings): void {
-  if (saveTimer) clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    saveTimer = null;
-    void bridge.saveSettings(JSON.stringify(settings)).catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : String(error);
-      saveErrorHandler?.(`设置保存失败：${message}`);
-    });
-  }, 350);
-}
+const persistence = new SettingsPersistence(
+  (json) => bridge.saveSettings(json),
+  (error) => saveErrorHandler?.(`设置保存失败：${error instanceof Error ? error.message : String(error)}`),
+);
 
 /** Write a pending debounced save immediately (used when the window closes). */
-export function flushSettingsSave(): void {
-  if (!saveTimer) return;
-  clearTimeout(saveTimer);
-  saveTimer = null;
-  void bridge.saveSettings(JSON.stringify(useSettings.getState().settings)).catch(() => undefined);
+export async function flushSettingsSave(): Promise<void> {
+  await persistence.flush();
 }
 
 /** Read the effective config for one side. */
@@ -108,8 +100,8 @@ export const useSettings = create<SettingsStore>((set, get) => {
    */
   function commit(next: AppSettings): void {
     set({ settings: next });
-    if (!get().loaded) return;
-    scheduleSave(next);
+    if (!get().loaded || get().loadError) return;
+    persistence.schedule(JSON.stringify(next));
   }
 
   function withProfiles(settings: AppSettings, profiles: AiProfile[]): AppSettings {
@@ -137,15 +129,18 @@ export const useSettings = create<SettingsStore>((set, get) => {
     loadError: null,
 
     async loadSettings() {
-      try {
-        const raw = await bridge.loadSettings();
-        set({ settings: parseSettings(raw), loaded: true, loadError: null });
-      } catch (error) {
-        // Start on defaults rather than leaving the UI blank, but remember why
-        // so the user is told instead of silently seeing an empty config.
-        const message = error instanceof Error ? error.message : String(error);
-        set({ settings: sanitizeSettings(DEFAULT_SETTINGS), loaded: true, loadError: message });
-      }
+      if (loading) return loading;
+      loading = (async () => {
+        try {
+          const raw = await bridge.loadSettings();
+          set({ settings: parseSettings(raw), loaded: true, loadError: null });
+        } catch (error) {
+          // Keep the original file safe until a successful read resolves this.
+          const message = error instanceof Error ? error.message : String(error);
+          set({ settings: sanitizeSettings(DEFAULT_SETTINGS), loaded: true, loadError: message });
+        }
+      })();
+      try { await loading; } finally { loading = null; }
     },
 
     update(patch) {

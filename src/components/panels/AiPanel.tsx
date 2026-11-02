@@ -77,7 +77,7 @@ export function AiPanel() {
                 <Wand2 size={12} /> 随机合法着法
               </button>
               <span className="faint" style={{ fontSize: 11, alignSelf: 'center' }}>
-                也可以在棋盘上手动替 AI 走子（把该方设为人类或使用「摆棋」）
+                可先在设置中修复本局使用的配置，再点「再试一次」；也可用随机合法着法继续。
               </span>
             </div>
           </div>

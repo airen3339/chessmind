@@ -64,6 +64,8 @@ Get-FileHash .\ChessMind-1.1.0-win-x64.zip -Algorithm SHA256
 
 自签名网关可以开「忽略证书错误」，需要额外鉴权头的网关可以填自定义请求头。
 
+请填写最终接口地址，应用不会自动跟随重定向，以免转发密钥。当前对局固定开始时的配置；修改用于下一局，AI 出错后点击「再试一次」会读取本局原配置的新密钥和参数。
+
 ## 快捷键
 
 | 键 | 作用 |
@@ -81,7 +83,7 @@ Get-FileHash .\ChessMind-1.1.0-win-x64.zip -Algorithm SHA256
 
 技术栈是 React 19 + TypeScript + Vite，外壳用 Tauri 2，规则引擎是 chess.js。
 
-需要 Node.js 20.19+ 和 Rust 1.85+。
+需要 Node.js 20.19+ 和 Rust 1.90+。
 
 ```powershell
 npm install

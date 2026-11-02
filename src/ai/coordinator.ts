@@ -1,7 +1,8 @@
 import type { Chess, Move } from 'chess.js';
 import type { Side } from '../game/types';
-import { runAttempt } from './client';
+import { runCompatibleAttempt } from './compatible';
 import {
+  DEFAULT_CONTEXT_TOKEN_BUDGET,
   estimateTokens,
   exchangeBudget,
   historyMessages,
@@ -10,8 +11,7 @@ import {
 } from './context';
 import { buildCorrectionPrompt, buildPositionPrompt, buildSystemPrompt } from './prompt';
 import { extractJsonObjects, resolveMove } from './resolveMove';
-import { THINKING_EFFORTS } from './types';
-import type { AiConfig, AttemptRecord, ChatMessage, ThinkingEffort, Usage } from './types';
+import type { AiConfig, AttemptRecord, ChatMessage, Usage } from './types';
 
 export interface TurnCallbacks {
   onAttemptStart(attempt: number, limit: number): void;
@@ -74,30 +74,6 @@ function isTransient(status: number | null, message: string): boolean {
   return /ECONNRESET|ETIMEDOUT|timed out|timeout|connection|network/i.test(message);
 }
 
-function isParameterError(status: number | null, message: string): boolean {
-  if (status !== 400 && status !== 422) return false;
-  return /max_tokens|max_completion_tokens|max_output_tokens|temperature|reasoning|thinking|budget|unsupported|invalid_request/i.test(
-    message,
-  );
-}
-
-function effortRank(effort: ThinkingEffort): number {
-  return THINKING_EFFORTS.indexOf(effort);
-}
-
-/** Highest effort a given model accepted, so a refusal costs one request, not every move. */
-const effortCeilings = new Map<string, ThinkingEffort>();
-
-/**
- * Models/gateways that rejected the reasoning parameter outright. Remembered per
- * endpoint so every later turn does not pay for the same failed request first.
- */
-const reasoningUnsupported = new Set<string>();
-
-function modelKey(cfg: AiConfig): string {
-  return `${cfg.protocol}|${cfg.baseUrl}|${cfg.model}`;
-}
-
 export function extractCommentary(raw: string): string | null {
   for (const object of extractJsonObjects(raw).reverse()) {
     for (const key of ['commentary', 'comment', 'explanation', 'thoughts']) {
@@ -130,20 +106,12 @@ export async function requestAiMove(opts: TurnOptions, cb: TurnCallbacks): Promi
   // Budget covers the whole request: system prompt + remembered turns + this
   // position pack. Remembered turns are trimmed (rarely, in one coarse step)
   // only down to the room that is actually left, so the newest pack always fits.
+  const budget = opts.cfg.contextBudget > 0 ? opts.cfg.contextBudget : DEFAULT_CONTEXT_TOKEN_BUDGET;
   const fixedTokens = estimateTokens(system) + estimateTokens(positionPrompt);
-  const kept = continuous
+  if (fixedTokens > budget) return { ok: false, error: '当前局面和系统提示超过上下文预算，请提高上限（约需 ' + fixedTokens + ' tokens）', attempts };
+  let kept = continuous
     ? trimExchanges(opts.exchanges, exchangeBudget(opts.cfg.contextBudget, fixedTokens))
     : [];
-  const historyMsgs = continuous ? historyMessages(kept) : [];
-  if (historyMsgs.length > 0) {
-    // Cache the stable prefix up to the last remembered reply; the position
-    // pack that follows (and the retries inside this turn) stay uncached.
-    historyMsgs[historyMsgs.length - 1].cache = true;
-  }
-  const messages: ChatMessage[] = [
-    ...historyMsgs,
-    { role: 'user', content: positionPrompt },
-  ];
   /**
    * Everything this turn appended after the remembered history: the position
    * pack, plus any rejected reply and its correction prompt. Saved verbatim as
@@ -151,25 +119,17 @@ export async function requestAiMove(opts: TurnOptions, cb: TurnCallbacks): Promi
    */
   const turnMessages: ChatMessage[] = [{ role: 'user', content: positionPrompt }];
 
-  const key = modelKey(opts.cfg);
-  const learned = effortCeilings.get(key);
-  let cfg: AiConfig =
-    learned && effortRank(learned) < effortRank(opts.cfg.effort)
-      ? { ...opts.cfg, effort: learned }
-      : opts.cfg;
-  if (reasoningUnsupported.has(key) && cfg.reasoning) {
-    // Already learned that this endpoint rejects the reasoning parameter.
-    cfg = { ...cfg, reasoning: false, maxTokens: Math.max(1024, Math.min(cfg.maxTokens, 4096)) };
-  }
-  /** The model refused `xhigh`/`max`; we already fell back to `high` once. */
-  let effortFallback = false;
-  /** The model refused the custom effort text; it is back to the preset. */
-  let effortTextCleared = false;
-  /** The model refused the reasoning param entirely; it is now stripped. */
-  let downgraded = false;
-
   for (let index = 0; index < limit; index += 1) {
     if (opts.signal.aborted) return { ok: false, error: '已取消', attempts };
+    const tokens = (items: ChatMessage[]) => items.reduce((n, m) => n + estimateTokens(m.content), 0);
+    if (estimateTokens(system) + tokens(turnMessages) > budget) {
+      turnMessages.splice(1);
+      cb.onNotice('纠错内容超过上下文预算，已从当前局面重新请求…');
+    }
+    kept = trimExchanges(kept, budget - estimateTokens(system) - tokens(turnMessages));
+    const historyMsgs = historyMessages(kept);
+    if (historyMsgs.length) historyMsgs[historyMsgs.length - 1].cache = true;
+    const messages: ChatMessage[] = [...historyMsgs, ...turnMessages];
     cb.onAttemptStart(index + 1, limit);
 
     let reasoning = '';
@@ -177,8 +137,14 @@ export async function requestAiMove(opts: TurnOptions, cb: TurnCallbacks): Promi
     const started = Date.now();
 
     const once = () =>
-      runAttempt({
-        cfg,
+      runCompatibleAttempt({
+        cfg: opts.cfg,
+        onNotice: cb.onNotice,
+        onReset: () => {
+          reasoning = '';
+          text = '';
+          cb.onAttemptStart(index + 1, limit);
+        },
         system,
         messages,
         signal: opts.signal,
@@ -198,64 +164,13 @@ export async function requestAiMove(opts: TurnOptions, cb: TurnCallbacks): Promi
 
     if (result.aborted) return { ok: false, error: '已取消', attempts };
 
-    if (result.error && isParameterError(result.status, result.error)) {
-      // A custom effort string the model does not know is rejected as a bad
-      // parameter. Drop back to the preset level before anything else.
-      if (
-        !effortTextCleared &&
-        cfg.reasoning &&
-        cfg.effortCustom.trim().length > 0 &&
-        /effort|thinking|reason/i.test(result.error)
-      ) {
-        effortTextCleared = true;
-        cfg = { ...cfg, effortCustom: '' };
-        cb.onNotice(`该模型不接受思考强度「${opts.cfg.effortCustom}」，已改回档位重试…`);
-        reasoning = '';
-        text = '';
-        index -= 1;
-        continue;
-      }
-
-      // Some models take `reasoning_effort` but not its top two levels. Step down
-      // to `high` once and keep thinking enabled instead of dropping it entirely.
-      const effortRejected =
-        !effortFallback &&
-        cfg.reasoning &&
-        (cfg.effort === 'xhigh' || cfg.effort === 'max') &&
-        /reason|effort|think/i.test(result.error);
-      if (effortRejected) {
-        effortFallback = true;
-        effortCeilings.set(key, 'high');
-        cfg = { ...cfg, effort: 'high' };
-        cb.onNotice(`该模型不接受 reasoning_effort=${opts.cfg.effort}，已降为 high 重试…`);
-        reasoning = '';
-        text = '';
-        index -= 1;
-        continue;
-      }
-
-      if (!downgraded) {
-        downgraded = true;
-        reasoningUnsupported.add(key);
-        cfg = {
-          ...cfg,
-          reasoning: false,
-          maxTokens: Math.max(1024, Math.min(cfg.maxTokens, 4096)),
-        };
-        cb.onNotice('网关拒绝了思考/长度参数，已自动降级参数重试…');
-        reasoning = '';
-        text = '';
-        index -= 1;
-        continue;
-      }
-    }
-
     if (result.error && isTransient(result.status, result.error)) {
       cb.onNotice(`请求失败（${result.status ?? '网络错误'}），1.2 秒后自动重试…`);
       await delay(1200, opts.signal);
       if (opts.signal.aborted) return { ok: false, error: '已取消', attempts };
       reasoning = '';
       text = '';
+      cb.onAttemptStart(index + 1, limit);
       result = await once();
       if (result.aborted) return { ok: false, error: '已取消', attempts };
     }
@@ -332,8 +247,6 @@ export async function requestAiMove(opts: TurnOptions, cb: TurnCallbacks): Promi
     cb.onAttemptEnd(record);
     const rejected = raw.slice(0, 4000);
     const correction = buildCorrectionPrompt(resolved.reason, raw, opts.chess);
-    messages.push({ role: 'assistant', content: rejected });
-    messages.push({ role: 'user', content: correction });
     turnMessages.push({ role: 'assistant', content: rejected });
     turnMessages.push({ role: 'user', content: correction });
     if (index + 1 < limit) {

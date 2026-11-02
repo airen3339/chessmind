@@ -27,11 +27,10 @@ function normalizeSan(raw: string): string {
     .trim()
     .replace(/[–—]/g, '-')
     .replace(/[+#!?]+/g, '')
-    .replace(/=([qrbn])/gi, '$1')
+    .replace(/=([qrbn])/gi, (_, piece: string) => piece.toUpperCase())
     .replace(/e\.p\.?/gi, '')
     .replace(/\s+/g, '')
-    .replace(/0/g, 'o')
-    .toLowerCase();
+    .replace(/[0o]/g, 'O');
 }
 
 /** Collect every balanced {...} substring; a model may wrap JSON in prose or fences. */
@@ -126,9 +125,8 @@ function findMove(
     const direct = sanMap.get(normalized);
     if (direct) return { move: direct, warnings };
     const withoutCapture = normalized.replace(/x/g, '');
-    for (const [key, move] of sanMap) {
-      if (key.replace(/x/g, '') === withoutCapture) return { move, warnings };
-    }
+    const relaxed = [...sanMap].filter(([key]) => key.replace(/x/g, '') === withoutCapture);
+    if (relaxed.length === 1) return { move: relaxed[0][1], warnings };
   }
 
   return null;

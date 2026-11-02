@@ -1,4 +1,4 @@
-import { runAttempt } from '../ai/client';
+import { runCompatibleAttempt } from '../ai/compatible';
 import type { AiConfig, Usage } from '../ai/types';
 
 export interface CoachReply {
@@ -68,7 +68,7 @@ export async function requestCoach(opts: {
     if (opts.signal.aborted) {
       return { ok: false, text: '', error: '已取消', elapsedMs: Date.now() - started, usage, attempts: attempt };
     }
-    const result = await runAttempt({
+    const result = await runCompatibleAttempt({
       cfg: coachConfig(opts.cfg),
       system: opts.system,
       messages: [{ role: 'user', content: opts.user }],

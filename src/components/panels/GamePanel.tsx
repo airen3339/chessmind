@@ -4,7 +4,6 @@ import { useGame } from '../../game/store';
 import { getEngine } from '../../game/store';
 import { materialOf } from '../../game/material';
 import type { MoveEntry, Side } from '../../game/types';
-import { useSettings, profileFor } from '../../settings';
 import { PieceGlyph } from '../board/PieceGlyph';
 
 export function GamePanel() {
@@ -16,14 +15,14 @@ export function GamePanel() {
   const thinking = useGame((s) => s.thinking);
   const fen = useGame((s) => s.fen);
   const version = useGame((s) => s.version);
-  const settings = useSettings((s) => s.settings);
+  const gameProfiles = useGame((s) => s.gameProfiles);
 
   const labels = useMemo(
     () => ({
-      w: profileFor(settings, 'w').name,
-      b: profileFor(settings, 'b').name,
+      w: gameProfiles.w.name,
+      b: gameProfiles.b.name,
     }),
-    [settings],
+    [gameProfiles],
   );
 
   const material = useMemo(() => {

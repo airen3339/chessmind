@@ -17,13 +17,16 @@ export const webBridge: Bridge = {
     );
     const onAbort = () => controller.abort();
     handlers.signal.addEventListener('abort', onAbort, { once: true });
+    if (handlers.signal.aborted) controller.abort();
     try {
       const response = await fetch(request.url, {
         method: request.method,
         headers: request.headers,
         body: request.body,
         signal: controller.signal,
+        redirect: 'error',
       });
+      handlers.onEvent({ kind: 'response', status: response.status });
       if (!response.ok) {
         const text = await response.text().catch(() => '');
         handlers.onEvent({
@@ -78,7 +81,7 @@ export const webBridge: Bridge = {
     try {
       window.localStorage.setItem(STORAGE_KEY, json);
     } catch {
-      // ignore quota errors
+      throw new Error('无法保存浏览器配置，请检查存储权限与可用空间');
     }
   },
 

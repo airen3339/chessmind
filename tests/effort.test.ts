@@ -8,13 +8,10 @@ import {
   geminiBudgetForText,
   geminiThinkingBudget,
   geminiThinkingPlan,
-  isKnownEffortText,
-  maxTokensForEffort,
   normalizeEffortText,
   openAiEffort,
   parseClaudeModel,
   resolveEffortText,
-  stepDownEffort,
 } from '../src/ai/effort';
 import { buildSystemPrompt } from '../src/ai/prompt';
 import { openaiChat } from '../src/ai/providers/openaiChat';
@@ -58,14 +55,6 @@ describe('effort scale', () => {
     expect(openAiEffort('max')).toBe('max');
   });
 
-  it('steps down one level until the bottom', () => {
-    expect(stepDownEffort('max')).toBe('xhigh');
-    expect(stepDownEffort('xhigh')).toBe('high');
-    expect(stepDownEffort('high')).toBe('medium');
-    expect(stepDownEffort('medium')).toBe('low');
-    expect(stepDownEffort('low')).toBeNull();
-  });
-
   it('grows the Anthropic thinking budget monotonically', () => {
     const budgets = THINKING_EFFORTS.map((effort) => anthropicThinkingBudget(effort));
     for (let i = 1; i < budgets.length; i += 1) {
@@ -78,12 +67,6 @@ describe('effort scale', () => {
     const budgets = THINKING_EFFORTS.map((effort) => geminiThinkingBudget(effort));
     for (let i = 1; i < budgets.length; i += 1) {
       expect(budgets[i]).toBeGreaterThan(budgets[i - 1]);
-    }
-  });
-
-  it('keeps max_tokens above the Anthropic thinking budget', () => {
-    for (const effort of THINKING_EFFORTS) {
-      expect(maxTokensForEffort(effort, 4096)).toBeGreaterThan(anthropicThinkingBudget(effort));
     }
   });
 
@@ -283,13 +266,6 @@ describe('custom effort text', () => {
 
   it('passes an unknown vendor value through instead of rewriting it', () => {
     expect(resolveEffortText('high', 'turbo')).toBe('turbo');
-  });
-
-  it('recognises the documented values', () => {
-    for (const value of ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']) {
-      expect(isKnownEffortText(value)).toBe(true);
-    }
-    expect(isKnownEffortText('turbo')).toBe(false);
   });
 
   it('normalises whitespace and case', () => {

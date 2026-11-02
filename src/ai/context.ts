@@ -100,7 +100,7 @@ export function trimExchanges(exchanges: Exchange[], budget: number): Exchange[]
   if (sizeOf(exchanges) <= budget) return exchanges;
   const target = Math.floor(budget * TRIM_RATIO);
   const list = [...exchanges];
-  while (list.length > 1 && sizeOf(list) > target) list.shift();
+  while (list.length > 0 && sizeOf(list) > target) list.shift();
   return list;
 }
 
@@ -121,7 +121,7 @@ export function appendExchange(
   if (sizeOf(list) <= limit) return list;
   const target = Math.floor(limit * TRIM_RATIO);
   let kept = list;
-  while (kept.length > 1 && sizeOf(kept) > target) kept = kept.slice(1);
+  while (kept.length > 0 && sizeOf(kept) > target) kept = kept.slice(1);
   return kept;
 }
 

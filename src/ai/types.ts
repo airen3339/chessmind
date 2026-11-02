@@ -99,6 +99,7 @@ export interface StreamRequest {
 }
 
 export type StreamEvent =
+  | { kind: 'response'; status: number }
   | { kind: 'chunk'; text: string }
   | { kind: 'end' }
   | { kind: 'error'; status?: number | null; message: string };

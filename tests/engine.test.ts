@@ -8,7 +8,6 @@ import {
   legalMoves,
   moveLogToSan,
   parseUci,
-  positionFacts,
   uciOf,
 } from '../src/game/engine';
 import { materialOf } from '../src/game/material';
@@ -70,21 +69,6 @@ describe('game result detection', () => {
 
   it('returns null for a live position', () => {
     expect(gameResultOf(new Chess())).toBeNull();
-  });
-});
-
-describe('position facts', () => {
-  it('describes the state only, never the result of a move', () => {
-    const chess = new Chess('4k3/8/8/3p4/8/8/8/3QK3 w - - 0 1');
-    const facts = positionFacts(chess);
-    expect(facts.legalCount).toBeGreaterThan(0);
-    expect(facts.inCheck).toBe(false);
-    expect(Object.keys(facts).sort()).toEqual(['inCheck', 'legalCount']);
-  });
-
-  it('reports check when the king is attacked', () => {
-    const chess = new Chess('4k3/8/8/8/8/8/4r3/4K3 w - - 0 1');
-    expect(positionFacts(chess).inCheck).toBe(true);
   });
 });
 

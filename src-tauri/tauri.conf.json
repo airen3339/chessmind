@@ -33,6 +33,10 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "resources": {
+      "../LICENSE": "LICENSE",
+      "../THIRD-PARTY-NOTICES.md": "THIRD-PARTY-NOTICES.md"
+    },
     "publisher": "windbullet",
     "copyright": "Copyright © 2026 windbullet",
     "shortDescription": "Play chess against any LLM",

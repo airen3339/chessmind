@@ -4,7 +4,7 @@ version = "1.1.0"
 description = "ChessMind - play chess against any LLM"
 authors = ["windbullet"]
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.90"
 license = "MIT"
 repository = "https://github.com/windbullet/chessmind"
 

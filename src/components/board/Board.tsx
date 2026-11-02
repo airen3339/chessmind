@@ -217,6 +217,7 @@ export function Board({
           else if (event.key === 'ArrowDown') step(8);
           else if (event.key === 'Enter' || event.key === ' ') {
             event.preventDefault();
+            event.stopPropagation();
             onSquareClick?.(BOARD_SQUARES[order[focusIndex]]);
           }
         }}
@@ -248,7 +249,7 @@ export function Board({
                 isTarget && !isCapture ? 'sq--target' : '',
                 isCapture ? 'sq--capture' : '',
                 dragOver === square ? 'sq--drop' : '',
-                focusIndex === index ? 'sq--focus' : '',
+                focusIndex !== null && order[focusIndex] === index ? 'sq--focus' : '',
                 editing ? 'sq--editing' : '',
               ]
                 .filter(Boolean)

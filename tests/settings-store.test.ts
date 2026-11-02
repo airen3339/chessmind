@@ -62,9 +62,18 @@ describe('settings persistence', () => {
     h.load.mockResolvedValueOnce(null);
     await useSettings.getState().loadSettings();
     useSettings.getState().update({ orientation: 'b' });
-    flushSettingsSave();
+    await flushSettingsSave();
     expect(h.save).toHaveBeenCalledTimes(1);
     const saved = JSON.parse(h.save.mock.calls[0][0]);
     expect(saved.orientation).toBe('b');
+  });
+
+  it('blocks automatic saves after a malformed JSON load', async () => {
+    h.load.mockResolvedValueOnce('{broken');
+    await useSettings.getState().loadSettings();
+    expect(useSettings.getState().loadError).toContain('设置文件内容损坏');
+    useSettings.getState().updateUi({ theme: 'light' });
+    vi.advanceTimersByTime(1000);
+    expect(h.save).not.toHaveBeenCalled();
   });
 });

@@ -1,4 +1,4 @@
-import { THINKING_EFFORTS, type ThinkingEffort, type ThinkingMode } from './types';
+import type { ThinkingEffort, ThinkingMode } from './types';
 
 /**
  * Map our five-level effort scale onto each vendor's own scale.
@@ -29,33 +29,11 @@ export function openAiEffort(effort: ThinkingEffort): string {
       return 'medium';
   }
 }
-
 /* ----------------------------------------------------- custom effort string */
-
-/**
- * Values the OpenAI `reasoning_effort` field accepts today. Not every model
- * supports every value, and vendors add new ones; the field is therefore free
- * text and anything unrecognised is passed through unchanged rather than
- * second-guessed here.
- */
-export const KNOWN_EFFORT_VALUES = [
-  'none',
-  'minimal',
-  'low',
-  'medium',
-  'high',
-  'xhigh',
-  'max',
-] as const;
 
 /** Trim and lower-case user input; empty string means "use the preset". */
 export function normalizeEffortText(text: string): string {
   return text.trim().toLowerCase();
-}
-
-/** True when the text is one of the values we can rely on across providers. */
-export function isKnownEffortText(text: string): boolean {
-  return (KNOWN_EFFORT_VALUES as readonly string[]).includes(normalizeEffortText(text));
 }
 
 /**
@@ -66,12 +44,6 @@ export function isKnownEffortText(text: string): boolean {
 export function resolveEffortText(effort: ThinkingEffort, custom: string | undefined): string {
   const text = normalizeEffortText(custom ?? '');
   return text.length > 0 ? text : openAiEffort(effort);
-}
-
-/** One level below `effort`, or `null` when we are already at the bottom. */
-export function stepDownEffort(effort: ThinkingEffort): ThinkingEffort | null {
-  const index = THINKING_EFFORTS.indexOf(effort);
-  return index > 0 ? THINKING_EFFORTS[index - 1] : null;
 }
 
 /* ------------------------------------------------------------------ Gemini */
@@ -350,10 +322,4 @@ export function anthropicThinkingPlan(
     effort: level,
     maxTokens: Math.max(requestedMaxTokens, ANTHROPIC_ADAPTIVE_FLOOR[effort]),
   };
-}
-
-/** Keep `max_tokens` above the thinking budget for budget-based providers. */
-export function maxTokensForEffort(effort: ThinkingEffort, requested: number): number {
-  const needed = anthropicThinkingBudget(effort) + 4096;
-  return Math.max(requested, needed);
 }

@@ -81,7 +81,9 @@ Self-signed gateways can enable "ignore certificate errors"; gateways that need 
 
 The stack is React 19 + TypeScript + Vite, the shell is Tauri 2, and the rules engine is chess.js.
 
-Requires Node.js 20.19+ and Rust 1.85+.
+Requires Node.js 20.19+ and Rust 1.90+.
+
+Use the final API endpoint: redirects are rejected to protect API keys. A running game keeps its selected profiles. After repairing that profile's credentials or parameters, use the explicit retry action to reload them for the current game.
 
 ```powershell
 npm install

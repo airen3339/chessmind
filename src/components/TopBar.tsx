@@ -84,7 +84,7 @@ export function TopBar({ onNewGame, onOpenSettings }: TopBarProps) {
       </div>
 
       <div className="topbar-actions">
-        <button type="button" className="btn btn--primary" onClick={onNewGame}>
+        <button type="button" className="btn btn--primary" onClick={onNewGame} disabled={mode === 'setup'}>
           <Plus size={15} /> 新对局
         </button>
         <button
@@ -113,6 +113,7 @@ export function TopBar({ onNewGame, onOpenSettings }: TopBarProps) {
           type="button"
           className="btn"
           onClick={() => openSetup({ source: active ? 'midgame' : 'new' })}
+          disabled={mode === 'setup'}
           title="摆棋：任意增删棋子后开始或继续对局"
         >
           <LayoutGrid size={15} /> 摆棋
@@ -137,9 +138,4 @@ export function TopBar({ onNewGame, onOpenSettings }: TopBarProps) {
       </div>
     </header>
   );
-}
-
-export function playerLabel(actor: 'human' | 'ai', model: string): string {
-  if (actor === 'human') return '人类玩家';
-  return model ? `AI · ${model}` : 'AI';
 }

@@ -17,14 +17,18 @@ fn hex_encode(bytes: &[u8]) -> String {
 }
 
 fn hex_decode(text: &str) -> Result<Vec<u8>, String> {
-    if text.len() % 2 != 0 {
+    if !text.len().is_multiple_of(2) {
         return Err("加密的设置文件已损坏".to_string());
     }
     let mut out = Vec::with_capacity(text.len() / 2);
     let bytes = text.as_bytes();
     for pair in bytes.chunks(2) {
-        let hi = (pair[0] as char).to_digit(16).ok_or("加密的设置文件已损坏")?;
-        let lo = (pair[1] as char).to_digit(16).ok_or("加密的设置文件已损坏")?;
+        let hi = (pair[0] as char)
+            .to_digit(16)
+            .ok_or("加密的设置文件已损坏")?;
+        let lo = (pair[1] as char)
+            .to_digit(16)
+            .ok_or("加密的设置文件已损坏")?;
         out.push((hi * 16 + lo) as u8);
     }
     Ok(out)
@@ -168,4 +172,3 @@ mod tests {
         assert_eq!(open_settings(&sealed).unwrap(), plaintext);
     }
 }
-

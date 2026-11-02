@@ -27,6 +27,9 @@ pub struct StreamRequest {
 #[derive(Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum StreamEvent {
+    Response {
+        status: u16,
+    },
     Chunk {
         text: String,
     },
@@ -71,7 +74,10 @@ fn shared_client(insecure: bool) -> Result<reqwest::Client, String> {
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(30))
         .danger_accept_invalid_certs(insecure)
-        .user_agent("ChessMind/1.0")
+        // API keys may live in arbitrary headers. Never forward them to a
+        // redirect target, including an HTTPS-to-HTTP downgrade.
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent(concat!("ChessMind/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|error| error.to_string())?;
     let _ = cell.set(client.clone());
@@ -86,7 +92,7 @@ fn check_url(url: &str) -> Result<(), String> {
     let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
     let loopback = host == "localhost"
         || host == "127.0.0.1"
-        || host == "::1"
+        || host == "[::1]"
         || host.ends_with(".localhost");
     match parsed.scheme() {
         "https" => Ok(()),
@@ -151,7 +157,8 @@ async fn run_stream(id: String, request: StreamRequest, on_event: Channel<Stream
     };
 
     let method_name = request.method.as_deref().unwrap_or("POST").to_uppercase();
-    let method = reqwest::Method::from_bytes(method_name.as_bytes()).unwrap_or(reqwest::Method::POST);
+    let method =
+        reqwest::Method::from_bytes(method_name.as_bytes()).unwrap_or(reqwest::Method::POST);
 
     let mut builder = client
         .request(method, &request.url)
@@ -181,6 +188,16 @@ async fn run_stream(id: String, request: StreamRequest, on_event: Channel<Stream
     };
 
     let status = response.status();
+    let _ = on_event.send(StreamEvent::Response {
+        status: status.as_u16(),
+    });
+    if status.is_redirection() {
+        let _ = on_event.send(StreamEvent::Error {
+            status: Some(status.as_u16()),
+            message: "接口返回了重定向。为保护密钥，请直接填写最终接口地址".to_string(),
+        });
+        return;
+    }
     if !status.is_success() {
         let text = response.text().await.unwrap_or_default();
         let _ = on_event.send(StreamEvent::Error {
@@ -276,18 +293,9 @@ fn read_settings(app: AppHandle) -> Result<Option<String>, String> {
         return Ok(None);
     }
     let raw = std::fs::read_to_string(&path).map_err(|error| error.to_string())?;
-    match secrets::open_settings(&raw) {
-        Ok(plaintext) => Ok(Some(plaintext)),
-        Err(error) => {
-            // Never leave the user one save away from losing a settings file we
-            // could not read (moved profile, corrupted blob). Keep it aside.
-            if let Ok(stamp) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-                let backup = path.with_extension(format!("json.unreadable-{}", stamp.as_secs()));
-                let _ = std::fs::rename(&path, backup);
-            }
-            Err(error)
-        }
-    }
+    // Keep unreadable files in place: moving them away makes the next launch
+    // look like a first run and would re-enable saves over the user's profile.
+    secrets::open_settings(&raw).map(Some)
 }
 
 #[tauri::command]
@@ -316,4 +324,61 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running ChessMind");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    #[test]
+    fn url_policy_accepts_loopback_and_rejects_remote_plaintext() {
+        for url in [
+            "http://localhost:11434/v1",
+            "http://127.0.0.1/v1",
+            "http://[::1]/v1",
+            "https://example.com/v1",
+        ] {
+            assert!(check_url(url).is_ok(), "{url}");
+        }
+        assert!(check_url("http://example.com/v1").is_err());
+        assert!(check_url("file:///settings.json").is_err());
+    }
+
+    #[tokio::test]
+    async fn redirect_never_forwards_custom_api_keys() {
+        let source = TcpListener::bind("127.0.0.1:0").unwrap();
+        let target = TcpListener::bind("127.0.0.1:0").unwrap();
+        target.set_nonblocking(true).unwrap();
+        let url = format!("http://{}/", source.local_addr().unwrap());
+        let destination = format!(
+            "http://localhost:{}/stolen",
+            target.local_addr().unwrap().port()
+        );
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = source.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut request = [0; 4096];
+            let _ = stream.read(&mut request).unwrap();
+            write!(stream, "HTTP/1.1 307 Temporary Redirect\r\nLocation: {destination}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+        });
+        let response = shared_client(false)
+            .unwrap()
+            .post(url)
+            .header("x-api-key", "test-only-key")
+            .header("x-goog-api-key", "test-only-key")
+            .timeout(Duration::from_secs(5))
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
+        server.join().unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::TEMPORARY_REDIRECT);
+        assert!(
+            matches!(target.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+        );
+    }
 }

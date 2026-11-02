@@ -166,6 +166,15 @@ export const openaiResponses: Provider = {
       return;
     }
     readUsage(record, emit);
+    if (record.status === 'incomplete') {
+      const details = asRecord(record.incomplete_details);
+      emit.error(null, `响应被截断（${asString(details?.reason) ?? 'incomplete'}）`);
+      return;
+    }
+    if (record.status && record.status !== 'completed') {
+      emit.error(null, `响应尚未完成（${String(record.status)}）`);
+      return;
+    }
     readOutputItems(asArray(record.output), emit);
     emit.done();
   },

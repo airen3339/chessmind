@@ -15,6 +15,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "verify:bundle": "node scripts/check-bundle.mjs",
     "tauri": "tauri",
     "dist": "tauri build && node scripts/package-release.mjs"
   },
@@ -31,6 +32,7 @@
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "6.1.2",
+    "jsdom": "^27.4.0",
     "typescript": "5.9.3",
     "vite": "8.3.5",
     "vitest": "5.0.5"

@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Brain, GraduationCap, ListOrdered, Settings2 } from 'lucide-react';
 import { useGame } from './game/store';
-import { flushSettingsSave, onSettingsSaveError, useSettings } from './settings';
+import { onSettingsSaveError, useSettings } from './settings';
+import { installCloseGuard } from './windowLifecycle';
 import { SetupEditor } from './components/SetupEditor';
 import { BoardArea } from './components/BoardArea';
 import { TopBar } from './components/TopBar';
@@ -56,9 +57,14 @@ export function App() {
   }, [notify]);
 
   useEffect(() => {
-    window.addEventListener('beforeunload', flushSettingsSave);
-    return () => window.removeEventListener('beforeunload', flushSettingsSave);
-  }, []);
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void installCloseGuard((message) => notify(message, 'error')).then((cleanup) => {
+      if (disposed) cleanup();
+      else unlisten = cleanup;
+    }).catch((error) => notify(`无法注册关闭保护：${String(error)}`, 'error'));
+    return () => { disposed = true; unlisten?.(); };
+  }, [notify]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = ui.theme;
@@ -67,7 +73,7 @@ export function App() {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       // Any open dialog owns the keyboard, and so do form widgets.
-      if (newGameOpen || mode === 'setup') return;
+      if (event.defaultPrevented || newGameOpen || mode === 'setup') return;
       if (ownsKeyboard(event.target)) return;
       if (event.ctrlKey || event.metaKey || event.altKey) return;
       const game = useGame.getState();
@@ -114,6 +120,12 @@ export function App() {
         onNewGame={() => setNewGameOpen(true)}
         onOpenSettings={() => setTab('settings')}
       />
+      {loadError && (
+        <div className="alert" role="alert">
+          读取配置失败，自动保存已暂停以保护原文件。修复配置文件后可重试。
+          <button type="button" className="btn btn--sm" onClick={() => void loadSettings()}>重新读取配置</button>
+        </div>
+      )}
 
       <div className="layout">
         <div className="board-column">

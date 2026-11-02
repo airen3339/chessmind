@@ -36,7 +36,7 @@ export function BoardArea() {
   const hintBusy = useGame((s) => s.hintBusy);
   const coachLog = useGame((s) => s.coachLog);
   const playedMoves = useGame(
-    (s) => s.moveLog.filter((entry) => entry.actor !== 'edit').length,
+    (s) => s.moveLog.length,
   );
   const tool = useEditor((s) => s.tool);
   const paintPiece = useEditor((s) => s.piece);

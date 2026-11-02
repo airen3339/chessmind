@@ -3,19 +3,10 @@ import { create } from 'zustand';
 import { requestAiMove } from '../ai/coordinator';
 import { appendExchange, truncateForPly } from '../ai/context';
 import type { Exchange } from '../ai/context';
-import type { AttemptRecord, Usage } from '../ai/types';
-import {
-  buildCoachReviewPrompt,
-  buildCoachSummaryPrompt,
-  buildCoachSystemPrompt,
-  buildHintPrompt,
-  buildHintSystemPrompt,
-  buildSummarySystemPrompt,
-  parseCoachReview,
-  parseHint,
-  parseSummary,
-} from '../coach/prompt';
-import { requestCoach } from '../coach/request';
+import type { AiProfile, AttemptRecord, Usage } from '../ai/types';
+import { createCoachSession } from '../coach/session';
+import type { CoachEntry, CoachSummary } from '../coach/session';
+export type { CoachEntry, CoachSummary } from '../coach/session';
 import { DEFAULT_COACH } from '../coach/types';
 import type { CoachConfig } from '../coach/types';
 import { useSettings, coachProfileFor, profileFor } from '../settings';
@@ -27,20 +18,6 @@ import {
   moveLogToSan,
   uciOf,
 } from './engine';
-import {
-  castlingAvailable,
-  cloneDraft,
-  draftFromFen,
-  draftToChess,
-  draftToFen,
-  emptyDraft,
-  kingsOnlyDraft,
-  moveDraftPiece,
-  normalizeCastling,
-  standardDraft,
-  toggleSquarePiece,
-  validateDraft,
-} from './setup';
 import type { DraftPiece, DraftValidation, SetupDraft } from './setup';
 import type {
   Actor,
@@ -53,6 +30,7 @@ import type {
   Side,
 } from './types';
 import { START_FEN } from './types';
+import { createSetupActions } from './setupSession';
 
 let engine: Chess = new Chess(START_FEN);
 
@@ -71,72 +49,6 @@ let exchangesBySide: Record<Side, Exchange[]> = { w: [], b: [] };
 function clearExchanges(): void {
   exchangesBySide = { w: [], b: [] };
 }
-
-/* ------------------------------------------------------------------- coach */
-
-/**
- * One coach card about one position: the verdict on the move that was just
- * played (or the explanation the engine itself gave for it), the read of the
- * position, or the suggestion the user asked for.
- */
-export interface CoachEntry {
-  id: number;
-  kind: 'review' | 'hint';
-  /** Half-moves on the board when the job was queued; used to drop stale entries on undo. */
-  ply: number;
-  number: number;
-  side: Side;
-  /** The move under review, or the suggested move for a hint (null when unusable). */
-  san: string | null;
-  /** Verdict on the move (review), or the reason for the suggestion (hint). */
-  verdict: string | null;
-  /** Read of the position; review entries only. */
-  read: string | null;
-  error: string | null;
-  elapsedMs: number;
-  /** The request behind this card is still queued or in flight. */
-  pending: boolean;
-  /** Which paragraphs this card will end up having, so placeholders are honest. */
-  expects: { verdict: boolean; read: boolean };
-}
-
-export interface CoachSummary {
-  state: 'running' | 'done' | 'failed';
-  text: string | null;
-  error: string | null;
-}
-
-type CoachJob =
-  | {
-      kind: 'review';
-      /** The card this job fills in; created when the request was queued. */
-      entryId: number;
-      afterFen: string;
-      before: { fen: string; moves: string[] } | null;
-      move: { number: number; side: Side; san: string };
-      fields: { review: boolean; position: boolean };
-    }
-  | { kind: 'hint'; entryId: number; fen: string; side: Side; history: string }
-  | { kind: 'summary'; sanLine: string; startFen: string; result: string };
-
-/**
- * Coach work is a single queue drained one request at a time: it never joins the
- * move loop, so a slow coach can neither delay nor break an AI turn.
- */
-let coachQueue: CoachJob[] = [];
-let coachAbort: AbortController | null = null;
-let coachToken = 0;
-let coachEntrySeq = 0;
-let coachDraining = false;
-/** Kind of the job currently on the wire, so a hint can be cancelled alone. */
-let coachRunning: CoachJob['kind'] | null = null;
-/** The side the coach speaks to: the single human, or `null` when both sides are. */
-function studentSideOf(players: { w: Actor; b: Actor }): Side | null {
-  if (players.w === 'human' && players.b !== 'human') return 'w';
-  if (players.b === 'human' && players.w !== 'human') return 'b';
-  return null;
-}
-
 
 export function getEngine(): Chess {
   return engine;
@@ -174,9 +86,11 @@ export interface Toast {
 
 export type SetupSource = 'new' | 'midgame';
 
-interface GameStore {
+export interface GameStore {
   mode: Mode;
   players: { w: Actor; b: Actor };
+  /** Profiles resolved when this game starts; next-game drafts cannot change them. */
+  gameProfiles: { w: AiProfile; b: AiProfile; coach: AiProfile };
   orientation: Side;
   anchor: Anchor;
   fen: string;
@@ -198,6 +112,7 @@ interface GameStore {
     players: { w: Actor; b: Actor };
     orientation: Side;
     coach: CoachConfig;
+    gameProfiles: GameStore['gameProfiles'];
   } | null;
   setupSource: SetupSource | null;
   toast: Toast | null;
@@ -216,6 +131,7 @@ interface GameStore {
     fen?: string;
     orientation?: Side;
     coach?: CoachConfig;
+    aiSelection?: { w: string; b: string };
   }): void;
   openSetup(opts: {
     source: SetupSource;
@@ -225,6 +141,7 @@ interface GameStore {
     players?: { w: Actor; b: Actor };
     orientation?: Side;
     coach?: CoachConfig;
+    aiSelection?: { w: string; b: string };
   }): void;
   setSetupPiece(square: string, piece: DraftPiece | null): void;
   moveSetupPiece(from: string, to: string): void;
@@ -253,24 +170,6 @@ interface GameStore {
   clearToast(): void;
 }
 
-function snapshotOf(state: {
-  anchor: Anchor;
-  moveLog: MoveEntry[];
-  lastMove: { from: string; to: string } | null;
-  mode: Mode;
-  result: GameResult | null;
-  turn: Side;
-}): GameSnapshot {
-  return {
-    anchor: state.anchor,
-    moveLog: state.moveLog,
-    lastMove: state.lastMove,
-    mode: state.mode,
-    result: state.result,
-    turn: state.turn,
-  };
-}
-
 function makeToast(message: string, tone: Toast['tone']): Toast {
   toastSeq += 1;
   return { id: toastSeq, message, tone };
@@ -286,6 +185,16 @@ function cancelPendingAi(): void {
     aiAbort = null;
   }
   aiToken += 1;
+}
+
+function resolveGameProfiles(
+  players: { w: Actor; b: Actor },
+  coach: CoachConfig,
+  aiSelection = useSettings.getState().settings.aiSelection,
+): GameStore['gameProfiles'] {
+  const settings = { ...useSettings.getState().settings, coach, aiSelection };
+  const copy = (profile: AiProfile): AiProfile => ({ ...profile, config: { ...profile.config } });
+  return { w: copy(profileFor(settings, 'w')), b: copy(profileFor(settings, 'b')), coach: copy(coachProfileFor(settings, players)) };
 }
 
 export const useGame = create<GameStore>((set, get) => {
@@ -314,188 +223,11 @@ export const useGame = create<GameStore>((set, get) => {
     });
   }
 
-  /* ------------------------------------------------------------- coach work */
-
-  function pushCoachEntry(entry: Omit<CoachEntry, 'id'>): number {
-    coachEntrySeq += 1;
-    const id = coachEntrySeq;
-    set((state) => ({ coachLog: [...state.coachLog, { ...entry, id }].slice(-60) }));
-    return id;
-  }
-
-  function patchCoachEntry(id: number, patch: Partial<CoachEntry>): void {
-    set((state) => ({
-      coachLog: state.coachLog.map((entry) => (entry.id === id ? { ...entry, ...patch } : entry)),
-    }));
-  }
-
-  /** Drop cards whose request was cancelled, so nothing spins forever. */
-  function dropPendingEntries(): void {
-    set((state) => ({ coachLog: state.coachLog.filter((entry) => !entry.pending) }));
-  }
-
-  function syncHintBusy(): void {
-    const busy = coachRunning === 'hint' || coachQueue.some((job) => job.kind === 'hint');
-    if (get().hintBusy !== busy) set({ hintBusy: busy });
-  }
-
-  /** Drop every queued or running coach request (new game, setup, pause, undo). */
-  function cancelPendingCoach(): void {
-    coachQueue = [];
-    if (coachAbort) {
-      coachAbort.abort();
-      coachAbort = null;
-    }
-    coachToken += 1;
-    syncHintBusy();
-    dropPendingEntries();
-    if (get().coachSummary?.state === 'running') set({ coachSummary: null });
-  }
-
-  /** A move landed, so any pending suggestion is about a position that is gone. */
-  function dropPendingHints(): void {
-    coachQueue = coachQueue.filter((job) => job.kind !== 'hint');
-    if (coachRunning === 'hint') {
-      coachAbort?.abort();
-      coachAbort = null;
-      coachToken += 1;
-    }
-    syncHintBusy();
-    set((state) => ({
-      coachLog: state.coachLog.filter((entry) => !(entry.pending && entry.kind === 'hint')),
-    }));
-  }
-
-  function queueCoach(job: CoachJob, front = false): void {
-    if (!get().coach.enabled) return;
-    if (front) coachQueue.unshift(job);
-    else coachQueue.push(job);
-    syncHintBusy();
-    void pumpCoach();
-  }
-
-  async function pumpCoach(): Promise<void> {
-    if (coachDraining) return;
-    coachDraining = true;
-    try {
-      for (;;) {
-        const job = coachQueue.shift();
-        if (!job) break;
-        if (!get().coach.enabled) continue;
-        try {
-          await runCoachJob(job);
-        } catch (error) {
-          // A coach failure must never escape as an unhandled rejection: the
-          // game has no reason to care about it.
-          console.warn('coach request failed', error);
-        }
-      }
-    } finally {
-      coachDraining = false;
-      coachRunning = null;
-      syncHintBusy();
-    }
-  }
-
-  async function runCoachJob(job: CoachJob): Promise<void> {
-    const settings = useSettings.getState().settings;
-    const profile = coachProfileFor(settings, get().players);
-    const lang = settings.ui.commentaryLang;
-    const studentSide = studentSideOf(get().players);
-    const controller = new AbortController();
-    coachAbort = controller;
-    coachRunning = job.kind;
-    const token = (coachToken += 1);
-    const isCurrent = () => token === coachToken && !controller.signal.aborted;
-    syncHintBusy();
-    if (job.kind === 'summary') {
-      set({ coachSummary: { state: 'running', text: null, error: null } });
-    }
-
-    try {
-      let system = '';
-      let user = '';
-      if (job.kind === 'review') {
-        system = buildCoachSystemPrompt({ studentSide, lang, fields: job.fields });
-        user = buildCoachReviewPrompt({
-          // The legal-move list of the previous position is only needed when the
-          // coach has to name a better move.
-          before: job.fields.review ? job.before : null,
-          move: job.move,
-          after: new Chess(job.afterFen, { skipValidation: true }),
-        });
-      } else if (job.kind === 'hint') {
-        const chess = new Chess(job.fen, { skipValidation: true });
-        system = buildHintSystemPrompt({ side: job.side, lang });
-        user = buildHintPrompt({ chess, side: job.side, history: job.history });
-      } else {
-        system = buildSummarySystemPrompt({ studentSide, lang });
-        user = buildCoachSummaryPrompt({
-          startFen: job.startFen,
-          sanLine: job.sanLine,
-          result: job.result,
-          lang,
-        });
-      }
-
-      const reply = await requestCoach({
-        cfg: profile.config,
-        system,
-        user,
-        signal: controller.signal,
-      });
-      if (!isCurrent()) return;
-
-      if (job.kind === 'summary') {
-        set({
-          coachSummary: reply.ok
-            ? { state: 'done', text: parseSummary(reply.text), error: null }
-            : { state: 'failed', text: null, error: reply.error ?? '教练请求失败' },
-        });
-        return;
-      }
-
-      if (job.kind === 'hint') {
-        const hint = reply.ok
-          ? parseHint(reply.text, new Chess(job.fen, { skipValidation: true }))
-          : { san: null, why: '' };
-        patchCoachEntry(job.entryId, {
-          san: reply.ok ? hint.san : null,
-          verdict: reply.ok ? hint.why || null : null,
-          error: reply.ok ? null : (reply.error ?? '教练请求失败'),
-          elapsedMs: reply.elapsedMs,
-          pending: false,
-        });
-        return;
-      }
-
-      const parsed = reply.ok
-        ? parseCoachReview(reply.text, job.fields)
-        : { moveReview: null, positionRead: null };
-      const patch: Partial<CoachEntry> = {
-        error: reply.ok ? null : (reply.error ?? '教练请求失败'),
-        elapsedMs: reply.elapsedMs,
-        pending: false,
-      };
-      // Only overwrite what this request actually asked for: the engine's own
-      // explanation of its move is already on the card and must survive.
-      if (job.fields.review) patch.verdict = parsed.moveReview;
-      if (job.fields.position) patch.read = parsed.positionRead;
-      patchCoachEntry(job.entryId, patch);
-    } catch (error) {
-      if (!isCurrent()) return;
-      const message = error instanceof Error ? error.message : String(error);
-      if (job.kind === 'summary') {
-        set({ coachSummary: { state: 'failed', text: null, error: message } });
-      } else {
-        patchCoachEntry(job.entryId, { error: message, pending: false });
-      }
-    } finally {
-      if (coachAbort === controller) coachAbort = null;
-      coachRunning = null;
-      syncHintBusy();
-    }
-  }
+  const { pushCoachEntry, cancelPendingCoach, dropPendingHints, queueCoach } = createCoachSession(get, set);
+  const setupActions = createSetupActions(set, get, {
+    getEngine: () => engine, setEngine: (chess) => { engine = chess; },
+    abortAiInternal, clearExchanges, cancelPendingCoach, scheduleAi, resolveGameProfiles,
+  });
 
   function applyMove(
     from: string,
@@ -625,7 +357,7 @@ export const useGame = create<GameStore>((set, get) => {
     const side = state.turn;
     const chess = engine;
     // Each side can use a different saved AI profile (relevant for AI vs AI).
-    const profile = profileFor(settings, side);
+    const profile = state.gameProfiles[side];
     const cfg = profile.config;
     const history = state.moveLog
       .slice(state.anchor.logIndex)
@@ -796,22 +528,11 @@ export const useGame = create<GameStore>((set, get) => {
     return null;
   }
 
-  function pushSetup(next: SetupDraft): void {
-    const state = get();
-    // Editing the board can strand castling rights (king or rook moved); drop
-    // them here so the draft never claims a right the position cannot honour.
-    const normalized = normalizeCastling(next);
-    set({
-      setupDraft: normalized,
-      setupPast: [...state.setupPast, state.setupDraft ?? normalized].slice(-120),
-      setupFuture: [],
-      setupValidation: validateDraft(cloneDraft(normalized)),
-    });
-  }
 
   return {
     mode: 'idle',
     players: { w: 'human', b: 'ai' },
+    gameProfiles: resolveGameProfiles({ w: 'human', b: 'ai' }, DEFAULT_COACH),
     orientation: 'w',
     anchor: { fen: START_FEN, logIndex: 0 },
     fen: START_FEN,
@@ -838,7 +559,7 @@ export const useGame = create<GameStore>((set, get) => {
     hintBusy: false,
     coachSummary: null,
 
-    startGame({ players, fen, orientation, coach }) {
+    startGame({ players, fen, orientation, coach, aiSelection }) {
       abortAiInternal();
       clearExchanges();
       cancelPendingCoach();
@@ -858,6 +579,7 @@ export const useGame = create<GameStore>((set, get) => {
       set({
         mode: snapshot.mode,
         players,
+        gameProfiles: resolveGameProfiles(players, nextCoach, aiSelection),
         orientation: orientation ?? get().orientation,
         coach: nextCoach,
         coachLog: [],
@@ -884,283 +606,14 @@ export const useGame = create<GameStore>((set, get) => {
       });
       useSettings.getState().update({
         players,
+        ...(aiSelection ? { aiSelection } : {}),
         orientation: orientation ?? get().orientation,
         coach: nextCoach,
       });
       scheduleAi();
     },
 
-    openSetup({ source, blank, fen, players: nextPlayers, orientation: nextOrientation, coach }) {
-      abortAiInternal();
-      cancelPendingCoach();
-      const state = get();
-      let draft: SetupDraft;
-      if (source === 'new') {
-        draft = blank ? emptyDraft('w') : fen ? draftFromFen(fen) : standardDraft();
-      } else {
-        draft = draftFromFen(engine.fen());
-      }
-      // Always remember the live game so "取消" can restore it, whatever the entry point.
-      const hasLiveGame =
-        state.mode === 'playing' || state.mode === 'paused' || state.mode === 'finished';
-      const returnSnapshot = hasLiveGame
-        ? snapshotOf({
-            anchor: state.anchor,
-            moveLog: state.moveLog,
-            lastMove: state.lastMove,
-            mode: state.mode,
-            result: state.result,
-            turn: state.turn,
-          })
-        : state.setupReturn;
-      set({
-        mode: 'setup',
-        players: nextPlayers ?? state.players,
-        orientation: nextOrientation ?? state.orientation,
-        coach: coach ? { ...coach } : state.coach,
-        setupDraft: draft,
-        setupValidation: validateDraft(cloneDraft(draft)),
-        setupPast: [],
-        setupFuture: [],
-        setupReturn: returnSnapshot,
-        setupReturnSides: {
-          players: state.players,
-          orientation: state.orientation,
-          coach: state.coach,
-        },
-        setupSource: source,
-        thinking: false,
-        aiTurn: null,
-        aiError: null,
-      });
-    },
-
-    setSetupPiece(square, piece) {
-      const draft = get().setupDraft;
-      if (!draft) return;
-      const next = toggleSquarePiece(draft, square, piece);
-      pushSetup(next);
-    },
-
-    moveSetupPiece(from, to) {
-      const draft = get().setupDraft;
-      if (!draft) return;
-      pushSetup(moveDraftPiece(draft, from, to));
-    },
-
-    clearSetupBoard() {
-      const draft = get().setupDraft;
-      if (!draft) return;
-      pushSetup(emptyDraft(draft.turn));
-    },
-
-    resetSetupStandard() {
-      pushSetup(standardDraft());
-    },
-
-    setupKingsOnly() {
-      const draft = get().setupDraft;
-      if (!draft) return;
-      pushSetup(kingsOnlyDraft(draft.turn));
-    },
-
-    setSetupTurn(turn) {
-      const draft = get().setupDraft;
-      if (!draft) return;
-      pushSetup({ ...cloneDraft(draft), turn });
-    },
-
-    toggleSetupCastling(color, side) {
-      const draft = get().setupDraft;
-      if (!draft) return;
-      if (!castlingAvailable(draft, color, side)) {
-        get().notify('易位权要求王与车在初始格', 'error');
-        return;
-      }
-      const next = cloneDraft(draft);
-      next.castling[color][side] = !next.castling[color][side];
-      pushSetup(next);
-    },
-
-    setSetupCounters(halfmove, moveNumber) {
-      const draft = get().setupDraft;
-      if (!draft) return;
-      const next = cloneDraft(draft);
-      next.halfmove = Math.max(0, Math.floor(halfmove));
-      next.moveNumber = Math.max(1, Math.floor(moveNumber));
-      pushSetup(next);
-    },
-
-    loadSetupFen(fen) {
-      try {
-        // Validate the structural FEN first so the user gets a precise message.
-        const probe = new Chess();
-        probe.load(fen, { skipValidation: false });
-        const draft = draftFromFen(fen);
-        pushSetup(draft);
-        get().notify('已载入 FEN', 'success');
-        return true;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        get().notify(`FEN 无法解析：${message}`, 'error');
-        return false;
-      }
-    },
-
-    setupUndo() {
-      const state = get();
-      if (state.setupPast.length === 0 || !state.setupDraft) return;
-      const previous = state.setupPast[state.setupPast.length - 1];
-      set({
-        setupDraft: previous,
-        setupPast: state.setupPast.slice(0, -1),
-        setupFuture: [state.setupDraft, ...state.setupFuture],
-        setupValidation: validateDraft(cloneDraft(previous)),
-      });
-    },
-
-    setupRedo() {
-      const state = get();
-      if (state.setupFuture.length === 0 || !state.setupDraft) return;
-      const next = state.setupFuture[0];
-      set({
-        setupDraft: next,
-        setupPast: [...state.setupPast, state.setupDraft],
-        setupFuture: state.setupFuture.slice(1),
-        setupValidation: validateDraft(cloneDraft(next)),
-      });
-    },
-
-    applySetup() {
-      const state = get();
-      const draft = state.setupDraft;
-      if (!draft) return false;
-      const validation = validateDraft(cloneDraft(draft));
-      if (!validation.ok) {
-        set({ setupValidation: validation });
-        get().notify(validation.errors[0] ?? '局面不合法', 'error');
-        return false;
-      }
-      abortAiInternal();
-      // The board was rearranged, so every remembered position pack is stale.
-      clearExchanges();
-      cancelPendingCoach();
-      const fen = draftToFen(draft);
-      const chess = draftToChess(draft);
-      const result = gameResultOf(chess);
-      const isMidgame = state.setupSource === 'midgame' && state.setupReturn !== null;
-      const moveLog: MoveEntry[] = isMidgame
-        ? [
-            ...state.moveLog,
-            {
-              ply: state.moveLog.length,
-              number: Math.max(1, Math.floor(draft.moveNumber)),
-              color: chess.turn(),
-              san: '—',
-              uci: '',
-              actor: 'edit',
-            },
-          ]
-        : [];
-      const anchor: Anchor = { fen, logIndex: moveLog.length };
-      engine = chess;
-      const snapshot: GameSnapshot = {
-        anchor,
-        moveLog,
-        lastMove: null,
-        mode: result ? 'finished' : 'playing',
-        result,
-        turn: engine.turn(),
-      };
-      set({
-        mode: snapshot.mode,
-        anchor,
-        moveLog,
-        lastMove: null,
-        result,
-        coachLog: [],
-        coachSummary: null,
-        snapshots: isMidgame ? [...state.snapshots, snapshot] : [snapshot],
-        setupDraft: null,
-        setupValidation: null,
-        setupPast: [],
-        setupFuture: [],
-        setupReturn: null,
-        setupReturnSides: null,
-        setupSource: null,
-        thinking: false,
-        aiTurn: null,
-        aiError: null,
-        fen: engine.fen(),
-        turn: engine.turn(),
-        version: state.version + 1,
-      });
-      get().notify(isMidgame ? '已按新摆放继续对局' : '已按新摆放开始对局', 'success');
-      scheduleAi();
-      return true;
-    },
-
-    cancelSetup() {
-      const state = get();
-      const back = state.setupReturn;
-      if (!back) {
-        engine = new Chess(START_FEN, { skipValidation: true });
-        clearExchanges();
-        set({
-          mode: 'idle',
-          players: state.setupReturnSides?.players ?? state.players,
-          orientation: state.setupReturnSides?.orientation ?? state.orientation,
-          coach: state.setupReturnSides?.coach ?? state.coach,
-          anchor: { fen: START_FEN, logIndex: 0 },
-          moveLog: [],
-          lastMove: null,
-          result: null,
-          snapshots: [
-            {
-              anchor: { fen: START_FEN, logIndex: 0 },
-              moveLog: [],
-              lastMove: null,
-              mode: 'idle',
-              result: null,
-              turn: 'w',
-            },
-          ],
-          setupDraft: null,
-          setupValidation: null,
-          setupPast: [],
-          setupFuture: [],
-          setupReturn: null,
-          setupReturnSides: null,
-          setupSource: null,
-          fen: START_FEN,
-          turn: 'w',
-          version: state.version + 1,
-        });
-        return;
-      }
-      engine = buildChess(back.anchor, back.moveLog);
-      set({
-        mode: back.mode,
-        players: state.setupReturnSides?.players ?? state.players,
-        orientation: state.setupReturnSides?.orientation ?? state.orientation,
-        coach: state.setupReturnSides?.coach ?? state.coach,
-        anchor: back.anchor,
-        moveLog: back.moveLog,
-        lastMove: back.lastMove,
-        result: back.result,
-        setupDraft: null,
-        setupValidation: null,
-        setupPast: [],
-        setupFuture: [],
-        setupReturn: null,
-        setupReturnSides: null,
-        setupSource: null,
-        fen: engine.fen(),
-        turn: engine.turn(),
-        version: state.version + 1,
-      });
-      scheduleAi();
-    },
+    ...setupActions,
 
     humanMove(from, to, promotion) {
       const state = get();
@@ -1173,7 +626,6 @@ export const useGame = create<GameStore>((set, get) => {
     },
 
     undo() {
-      abortAiInternal();
       const state = get();
       if (state.mode === 'setup') return;
       const target = findUndoTarget(state.snapshots, state.players);
@@ -1181,6 +633,7 @@ export const useGame = create<GameStore>((set, get) => {
         get().notify('没有可以悔棋的着法', 'info');
         return;
       }
+      abortAiInternal();
       const snapshot = state.snapshots[target];
       engine = buildChess(snapshot.anchor, snapshot.moveLog);
       // Same count as the `history` array fed to the AI: committed moves after
@@ -1202,7 +655,7 @@ export const useGame = create<GameStore>((set, get) => {
         lastMove: snapshot.lastMove,
         result: snapshot.mode === 'finished' ? null : snapshot.result,
         snapshots: state.snapshots.slice(0, target + 1),
-        coachLog: state.coachLog.filter((entry) => entry.ply <= playedMoves),
+        coachLog: state.coachLog.filter((entry) => entry.ply <= snapshot.moveLog.length),
         coachSummary: null,
         thinking: false,
         aiTurn: null,
@@ -1260,9 +713,10 @@ export const useGame = create<GameStore>((set, get) => {
     askHint() {
       const state = get();
       if (!state.coach.enabled || !state.coach.hint) return;
+      if (state.hintBusy) return;
       if (state.mode !== 'playing' || state.thinking) return;
       if (state.players[state.turn] !== 'human') return;
-      const ply = state.moveLog.filter((entry) => entry.actor !== 'edit').length;
+      const ply = state.moveLog.length;
       // Asking again replaces the previous suggestion for the same position.
       set({ coachLog: state.coachLog.filter((e) => !(e.kind === 'hint' && e.ply === ply)) });
       const number = engine.moveNumber();
@@ -1293,8 +747,18 @@ export const useGame = create<GameStore>((set, get) => {
 
     retryAi() {
       const state = get();
-      if (state.mode === 'setup') return;
-      set({ mode: 'playing', aiError: null, thinking: false, version: state.version + 1 });
+      if (state.mode !== 'paused' || !state.aiError || state.players[state.turn] !== 'ai') return;
+      // An explicit retry can pick up repaired credentials/parameters for the
+      // same pinned profile; a next-game selection never changes its identity.
+      const saved = useSettings.getState().settings.aiProfiles;
+      const refresh = (profile: AiProfile): AiProfile => {
+        const next = saved.find((item) => item.id === profile.id) ?? profile;
+        return { ...next, config: { ...next.config } };
+      };
+      set({
+        mode: 'playing', aiError: null, thinking: false, version: state.version + 1,
+        gameProfiles: { w: refresh(state.gameProfiles.w), b: refresh(state.gameProfiles.b), coach: refresh(state.gameProfiles.coach) },
+      });
       scheduleAi();
     },
 
