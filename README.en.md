@@ -26,15 +26,15 @@ Get either build from [Releases](../../releases); both are identical in features
 
 | File | Use case |
 | --- | --- |
-| `ChessMind-1.1.0-win-x64-setup.exe` | One-click installer |
-| `ChessMind-1.1.0-win-x64.zip` | Portable archive, unpack and run |
+| `ChessMind-1.1.1-win-x64-setup.exe` | One-click installer |
+| `ChessMind-1.1.1-win-x64.zip` | Portable archive, unpack and run |
 
 See [CHANGELOG.md](CHANGELOG.md) for what changed in each version.
 
 Each file ships with a matching `.sha256`:
 
 ```powershell
-Get-FileHash .\ChessMind-1.1.0-win-x64.zip -Algorithm SHA256
+Get-FileHash .\ChessMind-1.1.1-win-x64.zip -Algorithm SHA256
 ```
 
 **Requirements**: Windows 10 1803+ or Windows 11, with the WebView2 runtime (normally already present).
