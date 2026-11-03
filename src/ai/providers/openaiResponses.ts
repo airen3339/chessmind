@@ -121,8 +121,11 @@ export const openaiResponses: Provider = {
           break;
         }
         case 'response.incomplete': {
+          const response = asRecord(payload.response) ?? payload;
+          readUsage(response, emit);
+          const details = asRecord(response.incomplete_details);
           finished = true;
-          emit.error(null, '响应被截断（incomplete）');
+          emit.error(null, `响应被截断（${asString(details?.reason) ?? 'incomplete'}）`, 'incomplete');
           break;
         }
         case 'response.failed': {
@@ -148,7 +151,7 @@ export const openaiResponses: Provider = {
         reader.end();
         if (!finished) {
           finished = true;
-          emit.done();
+          emit.error(null, '响应流提前结束，未收到 response.completed。', 'incomplete');
         }
       },
     };
@@ -168,7 +171,7 @@ export const openaiResponses: Provider = {
     readUsage(record, emit);
     if (record.status === 'incomplete') {
       const details = asRecord(record.incomplete_details);
-      emit.error(null, `响应被截断（${asString(details?.reason) ?? 'incomplete'}）`);
+      emit.error(null, `响应被截断（${asString(details?.reason) ?? 'incomplete'}）`, 'incomplete');
       return;
     }
     if (record.status && record.status !== 'completed') {

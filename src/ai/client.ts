@@ -6,6 +6,8 @@ export interface AttemptResult {
   status: number | null;
   aborted: boolean;
   error: string | null;
+  /** A completed HTTP request whose generation stopped before a final answer. */
+  errorKind?: 'incomplete';
   usage: Usage | null;
   text: string;
   reasoning: string;
@@ -28,6 +30,7 @@ export async function runAttempt(opts: {
   let text = '';
   let usage: Usage | null = null;
   let error: string | null = null;
+  let errorKind: 'incomplete' | undefined;
   let status: number | null = null;
 
   const emit: EmitHandlers = {
@@ -52,8 +55,9 @@ export async function runAttempt(opts: {
     done() {
       // The transport end event is authoritative.
     },
-    error(nextStatus, message) {
+    error(nextStatus, message, kind) {
       error = message;
+      errorKind = kind;
       if (nextStatus !== null) status = nextStatus;
     },
   };
@@ -89,7 +93,7 @@ export async function runAttempt(opts: {
       };
     }
     provider.parseFull(payload, emit);
-    return { status, aborted: opts.signal.aborted, error, usage, text, reasoning };
+    return { status, aborted: opts.signal.aborted, error, errorKind, usage, text, reasoning };
   }
 
   const decoder = provider.createDecoder(opts.cfg, emit);
@@ -106,10 +110,6 @@ export async function runAttempt(opts: {
     },
   });
 
-  if (error) return { status, aborted: opts.signal.aborted, error, usage, text, reasoning };
-  if (!text && reasoning) {
-    // Some gateways put the whole answer into the reasoning channel.
-    text = reasoning;
-  }
+  if (error) return { status, aborted: opts.signal.aborted, error, errorKind, usage, text, reasoning };
   return { status, aborted: opts.signal.aborted, error, usage, text, reasoning };
 }

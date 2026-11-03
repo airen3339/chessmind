@@ -131,7 +131,7 @@ export interface EmitHandlers {
   text(text: string): void;
   usage(usage: Usage): void;
   done(): void;
-  error(status: number | null, message: string): void;
+  error(status: number | null, message: string, kind?: 'incomplete'): void;
 }
 
 export interface Decoder {
@@ -155,6 +155,8 @@ export interface TurnPrompt {
   side: Side;
   history: string[];
   edited: boolean;
+  commentary?: boolean;
+  lang?: string;
 }
 
 export interface AttemptRecord {

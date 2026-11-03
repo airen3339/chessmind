@@ -46,7 +46,7 @@ vi.mock('../src/ai/client', () => ({
 }));
 
 const { requestAiMove } = await import('../src/ai/coordinator');
-const { appendExchange, estimateExchangeTokens, estimateTokens } = await import('../src/ai/context');
+const { appendExchange, estimateTokens } = await import('../src/ai/context');
 import type { Exchange } from '../src/ai/context';
 
 function cfg(overrides: Partial<AiConfig> = {}): AiConfig {
@@ -129,11 +129,13 @@ describe('multi-turn continuous context', () => {
     // Every request shares the same system prompt.
     expect(new Set(h.sent.map((s) => s.system)).size).toBe(1);
 
-    // Each request contains the previous request's whole message list as its
-    // prefix, so the provider cache can read everything up to the last reply.
+    // Previously saved memories never change. The previous *current* position
+    // is compacted once before joining that growing cacheable prefix.
     const r2 = h.sent[1].messages;
     const r3 = h.sent[2].messages;
-    expect(r3.slice(0, r2.length)).toEqual(r2.map(({ role, content }) => ({ role, content })));
+    expect(r3.slice(0, r2.length - 1)).toEqual(r2.slice(0, -1).map(({ role, content }) => ({ role, content })));
+    expect(r3.at(-3)?.content).toContain('## PAST TURN');
+    expect(r3.at(-1)?.content).toContain('## POSITION');
   });
 
   it('moves the cache breakpoint forward without rewriting earlier ones', async () => {
@@ -156,7 +158,7 @@ describe('multi-turn continuous context', () => {
 
   it('never exceeds the configured token budget', async () => {
     const chess = new Chess();
-    // The fixed position fits, but a previous full position pack does not.
+    // The fixed position fits alongside compact memory, not old legal tables.
     const budget = 1_900;
     let exchanges: Exchange[] = [];
 
@@ -172,16 +174,27 @@ describe('multi-turn continuous context', () => {
       const sent = estimateTokens(request.system) + request.messages.reduce((n, m) => n + estimateTokens(m.content), 0);
       expect(sent).toBeLessThanOrEqual(budget);
     }
-    // History must actually have been trimmed, not left to grow forever.
-    expect(exchanges.length).toBeLessThan(3);
+    expect(exchanges).toHaveLength(2);
   });
 
-  it('records each exchange size without double-counting the shared prefix', async () => {
+  it('keeps ten full rounds of history without replaying old boards or legal lists', async () => {
     const chess = new Chess();
-    const exchange = await playTurn([], chess);
-    const size = estimateExchangeTokens(exchange);
-    const ownChars = exchange.messages.reduce((n, m) => n + m.content.length, 0);
-    // The stored size describes this exchange alone, not the whole request.
-    expect(size).toBe(Math.ceil(ownChars / 2.5));
+    let exchanges: Exchange[] = [];
+    for (let turn = 0; turn < 10; turn += 1) {
+      const exchange = await playTurn(exchanges, chess);
+      expect(exchange.messages[0].content).toContain(chess.fen());
+      expect(exchange.messages[0].content).not.toContain('LEGAL MOVES');
+      exchanges = appendExchange(exchanges, exchange);
+      const uci: string = JSON.parse(exchange.messages[1].content).move_uci;
+      chess.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci[4] });
+      chess.move(chess.moves()[0]);
+    }
+    const sizes = h.sent.map((request) => estimateTokens(request.system)
+      + request.messages.reduce((n, m) => n + estimateTokens(m.content), 0));
+    expect(sizes.at(-1)!).toBeLessThan(sizes[0] * 2);
+    const last = h.sent.at(-1)!.messages.map((m) => m.content).join('\n');
+    expect(last.match(/## LEGAL MOVES/g)).toHaveLength(1);
+    expect(last.match(/## PAST TURN/g)).toHaveLength(9);
   });
+
 });

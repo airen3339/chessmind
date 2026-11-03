@@ -141,30 +141,63 @@ describe('continuous vs isolated context', () => {
     expect(outcome.ok).toBe(true);
     if (outcome.ok) {
       expect(outcome.exchange.ply).toBe(2);
-      expect(outcome.exchange.messages[0].content).toContain('## POSITION');
+      expect(outcome.exchange.messages[0].content).toContain('## PAST TURN');
+      expect(outcome.exchange.messages[0].content).toContain(new Chess().fen());
+      expect(outcome.exchange.messages[0].content).not.toContain('LEGAL MOVES');
       expect(outcome.exchange.messages.at(-1)?.content).toContain('e2e4');
     }
   });
 
-  it('keeps the rejected reply and correction prompt in the saved exchange', async () => {
-    // First reply is illegal, second one is fine: the saved history must keep
-    // the whole exchange, otherwise the next turn replays a conversation the
-    // model never saw.
+  it('repairs a rejected move within the turn without replaying it on future turns', async () => {
     h.script.push('{"move_uci":"e2e9","move_san":"Qh9"}');
     const outcome = await turn('continuous', []);
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
 
     const roles = outcome.exchange.messages.map((m) => m.role);
-    expect(roles).toEqual(['user', 'assistant', 'user', 'assistant']);
-    expect(outcome.exchange.messages[1].content).toContain('e2e9');
-    expect(outcome.exchange.messages[2].content).toContain('could not be used');
+    expect(roles).toEqual(['user', 'assistant']);
+    expect(JSON.parse(outcome.exchange.messages[1].content)).toEqual({ move_uci: 'e2e4' });
+    expect(outcome.attempts).toHaveLength(2);
+    expect(outcome.attempts[0].raw).toContain('e2e9');
+    expect(h.sent[1].messages[1].content).toContain('e2e9');
+    expect(h.sent[1].messages[2].content).toContain('could not be used');
 
-    // And the next turn replays all four messages before its own position pack.
     h.sent.length = 0;
     await turn('continuous', [outcome.exchange]);
-    expect(h.sent[0].messages).toHaveLength(5);
-    expect(h.sent[0].messages[1].content).toContain('e2e9');
+    expect(h.sent[0].messages).toHaveLength(3);
+    expect(JSON.stringify(h.sent[0].messages)).not.toContain('e2e9');
+    expect(JSON.stringify(h.sent[0].messages)).not.toContain('could not be used');
+  });
+
+  it('retains the selected move and commentary without storing surrounding candidate analysis', async () => {
+    h.script.push('Considering Nf3 and d4.\n{"move_uci":"e2e4","commentary":"控制中心，为出子创造条件。"}');
+    const outcome = await turn('continuous', []);
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(JSON.parse(outcome.exchange.messages[1].content)).toEqual({
+      move_uci: 'e2e4', commentary: '控制中心，为出子创造条件。',
+    });
+    expect(outcome.attempts[0].raw).toContain('Considering Nf3');
+  });
+
+  it('does not save a commentary taken from a discarded reasoning block', async () => {
+    h.script.push('<think>{"move_uci":"d2d4","commentary":"Rejected plan"}</think>{"move_uci":"e2e4"}');
+    const outcome = await turn('continuous', []);
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.commentary).toBeNull();
+    expect(JSON.parse(outcome.exchange.messages[1].content)).toEqual({ move_uci: 'e2e4' });
+  });
+
+  it('keeps the end of a long rejected reply for repair and avoids duplicating it', async () => {
+    const raw = 'Long analysis. '.repeat(500) + 'Final candidate: Qh9.';
+    h.script.push(raw);
+    const outcome = await turn('continuous', []);
+    expect(outcome.ok).toBe(true);
+    const repairMessages = h.sent[1].messages;
+    expect(repairMessages[1].content).toContain('Final candidate: Qh9.');
+    expect(repairMessages[1].content.length).toBeLessThan(1600);
+    expect(repairMessages[2].content).not.toContain('Long analysis');
   });
 });
 

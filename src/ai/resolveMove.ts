@@ -33,6 +33,26 @@ function normalizeSan(raw: string): string {
     .replace(/[0o]/g, 'O');
 }
 
+/** Some gateways embed reasoning in content instead of a separate channel. */
+export function finalAnswerText(raw: string): string {
+  let text = raw.trimStart();
+  for (;;) {
+    if (!/^<(think|thinking|analysis)>/i.test(text)) return text;
+    const stack: string[] = [];
+    let end = -1;
+    for (const token of text.matchAll(/<\/?(think|thinking|analysis)>/gi)) {
+      const tag = token[1].toLowerCase();
+      if (token[0].startsWith('</')) {
+        if (stack.pop() !== tag) return '';
+        if (!stack.length) { end = token.index + token[0].length; break; }
+      } else stack.push(tag);
+    }
+    // An unfinished reasoning block contains no final decision we may play.
+    if (end < 0) return '';
+    text = text.slice(end).trimStart();
+  }
+}
+
 /** Collect every balanced {...} substring; a model may wrap JSON in prose or fences. */
 export function extractJsonObjects(text: string): Record<string, unknown>[] {
   const objects: Record<string, unknown>[] = [];
@@ -168,7 +188,8 @@ export function resolveMove(raw: string, chess: Chess): ResolveResult {
   const moves = legalMoves(chess);
   if (moves.length === 0) return { ok: false, reason: '当前局面没有任何合法着法' };
 
-  const objects = extractJsonObjects(raw);
+  const answer = finalAnswerText(raw);
+  const objects = extractJsonObjects(answer);
   const uciCandidates: string[] = [];
   const sanCandidates: string[] = [];
 
@@ -200,10 +221,10 @@ export function resolveMove(raw: string, chess: Chess): ResolveResult {
   // Fall back to scanning the raw text: coordinate notation first, then SAN tokens.
   const textUci: string[] = [];
   const uciRegex = /[a-h][1-8][-\s]?[a-h][1-8](?:=?[qrbnQRBN])?/g;
-  const uciMatches = raw.match(uciRegex);
+  const uciMatches = answer.match(uciRegex);
   if (uciMatches) textUci.push(...uciMatches);
   const textSan: string[] = [];
-  const tokens = raw.split(/[^A-Za-z0-9+#=/–—-]+/);
+  const tokens = answer.split(/[^A-Za-z0-9+#=/–—-]+/);
   for (const token of tokens) {
     if (token.length === 0) continue;
     if (/^(?:[KQRBN][a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?|O-O(?:-O)?|[a-h]x[a-h][1-8](?:=[QRBN])?|[a-h][1-8](?:=[QRBN])?)$/.test(token)) {
@@ -220,13 +241,13 @@ export function resolveMove(raw: string, chess: Chess): ResolveResult {
     return {
       ok: false,
       reason:
-        '回复正文提到了多个合法着法，无法判断实际要走哪一手。请用 {"move_uci":"...","move_san":"..."} 明确给出唯一着法。',
+        '回复正文提到了多个合法着法，无法判断实际要走哪一手。请用 {"move_uci":"..."} 明确给出唯一着法。',
     };
   }
 
   const hint = objects.length > 0 ? '（回复里没有可用的着法字段）' : '（回复里没有 JSON 对象）';
   return {
     ok: false,
-    reason: `无法从回复中解析出合法着法${hint}。必须从合法着法列表中选择一手，并以 {"move_uci":"...","move_san":"..."} 格式回答。`,
+    reason: `无法从回复中解析出合法着法${hint}。必须从合法着法列表中选择一手，并以 {"move_uci":"..."} 格式回答。`,
   };
 }

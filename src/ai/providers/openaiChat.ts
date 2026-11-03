@@ -11,9 +11,10 @@ import {
   tryParseJson,
 } from './common';
 
-const REASONING_MODEL = /^(o1|o3|o4|gpt-5|gpt5|codex|computer-use)/i;
+const REASONING_MODEL = /^(o1|o3|o4|gpt-?[5-9](?:[.-]|$)|codex|computer-use)/i;
 /** OpenAI families that predate `reasoning_effort` and reject the field. */
 const NON_REASONING_MODEL = /^(gpt-4o|gpt-4\.1|gpt-4-turbo|gpt-4-|gpt-4$|gpt-3\.5|chatgpt)/i;
+const LENGTH_ERROR = '模型输出达到 token 上限，尚未完成最终回答（finish_reason=length）。请提高最大输出 tokens 后重试。';
 
 function usesCompletionTokens(model: string): boolean {
   return REASONING_MODEL.test(model.trim());
@@ -142,6 +143,9 @@ export const openaiChat: Provider = {
       const finish = asString(choice.finish_reason);
       if (finish) {
         contentDone = true;
+        if (finish === 'length') {
+          emit.error(null, LENGTH_ERROR, 'incomplete');
+        }
         emitDone();
       }
     });
@@ -151,6 +155,9 @@ export const openaiChat: Provider = {
         reader.end();
         if (!finished) {
           finished = true;
+          if (!contentDone) {
+            emit.error(null, '响应流提前结束，未收到完成标记；模型尚未给出完整的最终回答。', 'incomplete');
+          }
           emitDone();
         }
       },
@@ -170,6 +177,10 @@ export const openaiChat: Provider = {
     }
     readUsage(record, emit);
     const choice = asRecord(asArray(record.choices)[0]);
+    if (choice?.finish_reason === 'length') {
+      emit.error(null, LENGTH_ERROR, 'incomplete');
+      return;
+    }
     const message = choice ? asRecord(choice.message) : null;
     if (message) readMessage(message, emit);
     emit.done();

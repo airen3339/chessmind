@@ -9,8 +9,8 @@ import {
   trimExchanges,
   type Exchange,
 } from './context';
-import { buildCorrectionPrompt, buildPositionPrompt, buildSystemPrompt } from './prompt';
-import { extractJsonObjects, resolveMove } from './resolveMove';
+import { buildCorrectionPrompt, buildPastTurnPrompt, buildPositionPrompt, buildSystemPrompt } from './prompt';
+import { extractJsonObjects, finalAnswerText, resolveMove } from './resolveMove';
 import type { AiConfig, AttemptRecord, ChatMessage, Usage } from './types';
 
 export interface TurnCallbacks {
@@ -44,7 +44,7 @@ export type TurnOutcome =
       commentary: string | null;
       usage: Usage | null;
       warnings: string[];
-      /** The exchange to remember for continuous context (position pack + reply). */
+      /** Compact past-position note and actual choice for continuous context. */
       exchange: Exchange;
     }
   | { ok: false; error: string; attempts: AttemptRecord[] };
@@ -74,8 +74,12 @@ function isTransient(status: number | null, message: string): boolean {
   return /ECONNRESET|ETIMEDOUT|timed out|timeout|connection|network/i.test(message);
 }
 
+function isTimeout(message: string): boolean {
+  return /\btimed?\s*out\b|\btimeout\b|\bETIMEDOUT\b|超时/i.test(message);
+}
+
 export function extractCommentary(raw: string): string | null {
-  for (const object of extractJsonObjects(raw).reverse()) {
+  for (const object of extractJsonObjects(finalAnswerText(raw)).reverse()) {
     for (const key of ['commentary', 'comment', 'explanation', 'thoughts']) {
       const value = object[key];
       if (typeof value === 'string' && value.trim()) return value.trim();
@@ -94,15 +98,17 @@ export async function requestAiMove(opts: TurnOptions, cb: TurnCallbacks): Promi
     opponent: opts.opponent,
     continuous,
   });
-  // The current position pack. In continuous mode it is appended *after* the
-  // remembered exchanges so the stable prefix (system + old turns) is untouched
-  // and the provider's prefix cache keeps hitting.
+  // Keep remembered turns stable as a cacheable prefix. Only the current turn
+  // needs a full board/history/legal table; past positions are exact FEN notes.
   const positionPrompt = buildPositionPrompt(opts.chess, {
     side: opts.side,
     history: opts.history,
     edited: opts.edited,
+    commentary: opts.commentary,
+    lang: opts.lang,
   });
   const movesOnBoard = opts.history.length;
+  const pastTurnPrompt = buildPastTurnPrompt(opts.chess, movesOnBoard, opts.history.at(-1));
   // Budget covers the whole request: system prompt + remembered turns + this
   // position pack. Remembered turns are trimmed (rarely, in one coarse step)
   // only down to the room that is actually left, so the newest pack always fits.
@@ -112,11 +118,8 @@ export async function requestAiMove(opts: TurnOptions, cb: TurnCallbacks): Promi
   let kept = continuous
     ? trimExchanges(opts.exchanges, exchangeBudget(opts.cfg.contextBudget, fixedTokens))
     : [];
-  /**
-   * Everything this turn appended after the remembered history: the position
-   * pack, plus any rejected reply and its correction prompt. Saved verbatim as
-   * the next turn's history so the model sees the same conversation it had.
-   */
+  // Retries belong to this turn, not to the next turn's strategic memory.
+  // AttemptRecord retains their full output for diagnostics in the UI.
   const turnMessages: ChatMessage[] = [{ role: 'user', content: positionPrompt }];
 
   for (let index = 0; index < limit; index += 1) {
@@ -164,7 +167,7 @@ export async function requestAiMove(opts: TurnOptions, cb: TurnCallbacks): Promi
 
     if (result.aborted) return { ok: false, error: '已取消', attempts };
 
-    if (result.error && isTransient(result.status, result.error)) {
+    if (result.error && result.errorKind !== 'incomplete' && !isTimeout(result.error) && isTransient(result.status, result.error)) {
       cb.onNotice(`请求失败（${result.status ?? '网络错误'}），1.2 秒后自动重试…`);
       await delay(1200, opts.signal);
       if (opts.signal.aborted) return { ok: false, error: '已取消', attempts };
@@ -173,6 +176,16 @@ export async function requestAiMove(opts: TurnOptions, cb: TurnCallbacks): Promi
       cb.onAttemptStart(index + 1, limit);
       result = await once();
       if (result.aborted) return { ok: false, error: '已取消', attempts };
+    }
+
+    if (!result.error && !result.text.trim()) {
+      // A few gateways put a complete JSON answer in the reasoning channel.
+      // Accept that explicit object, never a scan of unfinished candidate prose.
+      let answer: unknown;
+      try { answer = JSON.parse(result.reasoning.trim()); } catch { /* no final JSON */ }
+      result = answer && typeof answer === 'object' && !Array.isArray(answer)
+        ? { ...result, text: result.reasoning.trim() }
+        : { ...result, error: '接口没有返回最终回答（只有推理或空内容），已停止自动重试。可手动重试或调整输出、超时设置。', errorKind: 'incomplete' };
     }
 
     const elapsedMs = Date.now() - started;
@@ -192,6 +205,12 @@ export async function requestAiMove(opts: TurnOptions, cb: TurnCallbacks): Promi
       };
       attempts.push(record);
       cb.onAttemptEnd(record);
+      // Repeating the same capped request cannot repair missing output. In
+      // particular, never parse an unfinished chain of thought as a chess move.
+      if (result.errorKind === 'incomplete' || isTimeout(result.error)) {
+        if (isTimeout(result.error)) cb.onNotice('请求已超时，已停止自动重试；可手动重试或调整请求超时。');
+        return { ok: false, error: record.error!, attempts };
+      }
       if (index + 1 < limit) {
         cb.onNotice('请求失败，正在重试…');
         await delay(800, opts.signal);
@@ -201,6 +220,7 @@ export async function requestAiMove(opts: TurnOptions, cb: TurnCallbacks): Promi
 
     const resolved = resolveMove(raw, opts.chess);
     if (resolved.ok) {
+      const commentary = extractCommentary(raw);
       const record: AttemptRecord = {
         index: index + 1,
         reasoning,
@@ -219,15 +239,21 @@ export async function requestAiMove(opts: TurnOptions, cb: TurnCallbacks): Promi
         move: resolved.value.move,
         attempts,
         reasoning,
-        commentary: extractCommentary(raw),
+        commentary,
         usage: result.usage,
         warnings: resolved.value.warnings,
         exchange: {
           ply: movesOnBoard,
-          // Replay exactly what this turn put on the wire, including any
-          // rejected reply + correction prompt, so the next turn continues the
-          // same conversation instead of silently dropping the retries.
-          messages: [...turnMessages, { role: 'assistant', content: raw || resolved.value.move.san }],
+          // Preserve every old board exactly as FEN, plus its actual move and
+          // explanation, without replaying old legal lists or failed attempts.
+          // Once saved, these compact pairs form a growing cacheable prefix.
+          messages: [
+            { role: 'user', content: pastTurnPrompt },
+            { role: 'assistant', content: JSON.stringify({
+              move_uci: resolved.value.uci,
+              ...(commentary ? { commentary } : {}),
+            }) },
+          ],
         },
       };
     }
@@ -245,8 +271,10 @@ export async function requestAiMove(opts: TurnOptions, cb: TurnCallbacks): Promi
     };
     attempts.push(record);
     cb.onAttemptEnd(record);
-    const rejected = raw.slice(0, 4000);
-    const correction = buildCorrectionPrompt(resolved.reason, raw, opts.chess);
+    // The final decision tends to be at the end. Do not replay thousands of
+    // tokens of candidate analysis or duplicate the reply inside the repair.
+    const rejected = raw.length > 1500 ? `[Earlier analysis omitted]\n${raw.slice(-1500)}` : raw;
+    const correction = buildCorrectionPrompt(resolved.reason, opts.chess);
     turnMessages.push({ role: 'assistant', content: rejected });
     turnMessages.push({ role: 'user', content: correction });
     if (index + 1 < limit) {

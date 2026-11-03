@@ -36,8 +36,8 @@ let engine: Chess = new Chess(START_FEN);
 
 /**
  * Conversation carried across moves for continuous-context mode: each AI turn's
- * position pack plus the reply it gave. Kept outside the Zustand state because
- * it never needs to trigger a re-render. Reset on a new game / board edit and
+ * compact position note plus its chosen move/explanation. Kept outside the
+ * state because it never needs to trigger a re-render. Reset on a new game / board edit and
  * truncated when moves are taken back.
  *
  * Kept PER SIDE: in an AI-vs-AI game the two engines are separate conversations,

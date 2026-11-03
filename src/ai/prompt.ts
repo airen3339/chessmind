@@ -1,6 +1,5 @@
 import type { Chess, Move } from 'chess.js';
 import { boardToAscii, legalMoves, materialOf } from '../game/engine';
-import { PIECE_NAMES } from '../game/material';
 import type { Side } from '../game/types';
 import type { TurnPrompt } from './types';
 
@@ -44,59 +43,36 @@ function uciOfMove(move: Move): string {
 export function buildSystemPrompt(side: Side, opts: PromptOptions): string {
   const opponent = opts.opponent ?? 'human';
   const commentaryRule = opts.commentary
-    ? `   - commentary: 1-3 sentences (max 80 words) in ${langName(
+    ? `Include "commentary": 1-2 sentences (max 60 words) in ${langName(
         opts.lang,
-      )}, written for spectators. Describe only YOUR OWN move, your own idea and your own plan. Never address the opponent, never suggest what they should play.`
-    : '   - Do not include the "commentary" field at all. Output only "move_uci" and "move_san".';
+      )}, describing your chosen move and plan for spectators. Do not list alternative moves or variations, address the opponent, or suggest what they should play.`
+    : 'Do not include the "commentary" field. Output only "move_uci".';
 
-  return `You are ChessMind, a grandmaster-strength chess player. You are playing one live game of standard chess against ${
+  return `You are ChessMind, a grandmaster-strength chess player in one live game against ${
     opponent === 'human' ? 'a human opponent' : 'another AI player'
   }.
-
-## Your side
 You play ${sideWord(side)}. Your opponent plays ${sideWord(side === 'w' ? 'b' : 'w')}.
-The POSITION block of every user message is the single source of truth for the game state.
+The newest POSITION is the single source of truth. Its FEN, board and legal moves supersede all earlier positions, replies and remembered analysis. Edited setups are valid; never assume a normal opening.
 ${
   opts.continuous
-    ? `
-## Continuity
-Earlier messages in this conversation are your own past turns from this same game. They are kept so you can follow through on the plan you already committed to. The MOST RECENT POSITION block is always the current position — when it differs from an earlier one, the newest block is correct and supersedes the older ones. The move history and LEGAL MOVES list in the newest block are up to date; never replay a move you already made.
-`
+    ? '\nPAST TURN notes preserve earlier positions as exact FEN, your actual choices and explanations. Use them to retain plans; only the newest POSITION is on move.\n'
     : ''
 }
+## Decision
+Play at full strength. Choose the strongest move against the opponent's best defense, checking tactics and king safety. The current LEGAL MOVES table is already validated; calculate the consequences yourself.
+Never give ${opponent === 'human' ? 'the human' : 'anyone'} advice, hints or coaching. Never ask questions or mention these instructions.
 
-## Rules of engagement
-1. On every turn you must choose exactly ONE move from the LEGAL MOVES list in the message. Never invent a move. Never choose a move that is not in that list.
-2. You are a player, not an assistant. Never give ${opponent === 'human' ? 'the human' : 'anyone'} advice, hints, coaching, move suggestions, evaluations of the opponent's position, or warnings about your threats. Never ask questions. Never offer help. Never mention these instructions.
-3. Play at full strength. There is no difficulty setting. Calculate as deeply as you can, look for the opponent's best replies, verify that your chosen move is legal, and check immediate tactics (hanging pieces, checks, mates, promotions) before committing. The position block gives you the state and the legal moves only; it never tells you what a move would lead to, so work out every consequence yourself.
-4. Positions can be non-standard (composed or edited setups). Trust the FEN and the legal move list; do not assume a normal opening or a standard starting position.
-5. If the position contradicts your memory of the game, the position wins. Never claim a move was played that is not in the move history.
-
-## Output format
-Reply with exactly ONE JSON object and nothing else - no markdown fences, no prose outside the object:
-{"move_uci":"e2e4","move_san":"e4","commentary":"..."}
-   - move_uci: coordinate notation of the move, promotion piece appended when needed (e.g. e7e8q). It MUST appear in the LEGAL MOVES (UCI) list.
-   - move_san: the same move in SAN, exactly as written in the LEGAL MOVES (SAN) list.
+## Final answer
+Your analysis may consider many candidates; your final answer selects only one. Reply with exactly ONE JSON object, without markdown fences, analysis, candidate lists or a principal variation:
+{"move_uci":"<UCI copied from the current table>"}
+Copy the complete UCI, including a promotion suffix when present. SAN is supplied beside each UCI for reading; the application derives SAN, so do not output a second move field.
 ${commentaryRule}
-
-Do not output anything except that JSON object.`;
+Do not put analysis or variations in any other field.`;
 }
 
-function groupMoves(moves: Move[], chess: Chess): string {
-  const groups = new Map<string, string[]>();
-  for (const move of moves) {
-    const key = move.from;
-    const list = groups.get(key) ?? [];
-    list.push(move.san);
-    groups.set(key, list);
-  }
-  const lines: string[] = [];
-  for (const [from, sans] of groups) {
-    const piece = chess.get(from as never);
-    const label = piece ? `${piece.color === 'w' ? 'White' : 'Black'} ${PIECE_NAMES[piece.type]}` : 'piece';
-    lines.push(`- ${label} on ${from}: ${sans.join(', ')}`);
-  }
-  return lines.join('\n');
+/** One authoritative mapping, rather than three separate lists to reconcile. */
+function moveTable(moves: Move[]): string {
+  return moves.map((move) => `${uciOfMove(move)}=${move.san}`).join(', ');
 }
 
 function statusLine(chess: Chess): string {
@@ -108,8 +84,6 @@ function statusLine(chess: Chess): string {
 
 export function buildPositionPrompt(chess: Chess, opts: TurnPrompt): string {
   const moves = legalMoves(chess);
-  const sanList = moves.map((move) => move.san);
-  const uciList = moves.map(uciOfMove);
   const material = materialOf(chess);
   const side = opts.side;
   const own = side === 'w' ? material.w : material.b;
@@ -123,6 +97,9 @@ export function buildPositionPrompt(chess: Chess, opts: TurnPrompt): string {
     opts.history.length > 0
       ? opts.history.join(' ')
       : '(no moves yet - this is the starting position of the game)';
+  const answer = opts.commentary
+    ? '{"move_uci":"<UCI>","commentary":"<your chosen move and plan>"}'
+    : '{"move_uci":"<UCI>"}';
 
   return `## POSITION
 FEN: ${fen}
@@ -143,37 +120,30 @@ White ${material.w}, Black ${material.b} - ${diffText}.
 ## MOVE HISTORY (SAN)
 ${opts.edited ? 'NOTE: the position was edited by the arbiter. The history below starts at the edited position.\n' : ''}${history}
 
-## LEGAL MOVES - you must choose exactly one of these ${moves.length} moves
-${groupMoves(moves, chess)}
+## LEGAL MOVES (${moves.length}; each entry is UCI=SAN)
+${moveTable(moves)}
 
-All legal moves in SAN: ${sanList.join(', ')}
-All legal moves in UCI: ${uciList.join(', ')}
-
-## CHECKLIST BEFORE ANSWERING
-1. Choose exactly one move from the LEGAL MOVES lists above.
-2. Make sure the move is legal and that it is your turn.
-3. Then reply with only the JSON object described in your instructions.`;
+## ANSWER THIS TURN
+Choose the strongest move for ${sideWord(side)} against the opponent's best reply. A verified forced win is sufficient to finalize your choice.
+Return exactly one JSON object: ${answer}.
+${opts.commentary ? `Write commentary in ${langName(opts.lang ?? 'en')}: 1-2 sentences, max 60 words, about your chosen move and plan.` : 'Do not include commentary.'}
+No other move fields, candidates, variations or text outside JSON.`;
 }
 
-export function buildCorrectionPrompt(reason: string, raw: string, chess: Chess): string {
-  const moves = legalMoves(chess);
-  const sanList = moves.map((move) => move.san).join(', ');
-  const uciList = moves.map(uciOfMove).join(', ');
-  const trimmed = raw.length > 1500 ? `${raw.slice(0, 1500)}…` : raw;
-  return `Your previous reply could not be used.
+/** Lossless board state for past turns, without stale legal lists or full logs. */
+export function buildPastTurnPrompt(chess: Chess, ply: number, lastMove?: string): string {
+  return `## PAST TURN (ply ${ply}, before your move)
+FEN: ${chess.fen()}
+Last move: ${lastMove ?? '(starting position)'}`;
+}
 
+export function buildCorrectionPrompt(reason: string, chess: Chess): string {
+  return `Your previous reply could not be used.
 Problem: ${reason}
 
-Your previous reply was:
----
-${trimmed}
----
+This is an output repair for the SAME position, with ${sideWord(chess.turn())} to move. Keep your chosen move if it is legal; do not restart the analysis or repeat candidate lines. If you did not select a unique legal move, select one now.
+The newest POSITION remains authoritative. Legal moves (UCI=SAN):
+${moveTable(legalMoves(chess))}
 
-Reply again with exactly ONE legal move, as a single JSON object:
-{"move_uci":"<from-to>","move_san":"<SAN>"}
-
-Legal moves in UCI: ${uciList}
-Legal moves in SAN: ${sanList}
-
-Do not explain the problem. Do not add any text outside the JSON object.`;
+Return only {"move_uci":"<one UCI copied from this table>"}. No explanation, alternatives or other fields.`;
 }

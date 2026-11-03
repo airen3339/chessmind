@@ -112,6 +112,14 @@ describe('openai chat completions', () => {
     expect(body.reasoning_effort).toBe('high');
   });
 
+  it.each(['gpt-5', 'gpt5', 'gpt-6.1-sol', 'gpt-6-sol', 'gpt-7'])('preserves the max effort and output cap for %s', (model) => {
+    const request = openaiChat.buildRequest({ ...CFG, model, effort: 'max', maxTokens: 8192 }, 'sys', MESSAGES, true);
+    const body = JSON.parse(request.body);
+    expect(body.max_completion_tokens).toBe(8192);
+    expect(body.max_tokens).toBeUndefined();
+    expect(body.reasoning_effort).toBe('max');
+  });
+
   it('omits reasoning_effort for models that predate it', () => {
     for (const model of ['gpt-4o', 'gpt-4.1', 'gpt-4-turbo', 'gpt-3.5-turbo']) {
       const body = JSON.parse(

@@ -1,18 +1,18 @@
 import type { ChatMessage, Usage } from './types';
 
 /**
- * One AI move as it appeared in the conversation: the position pack it was
- * asked about and the reply it gave. Kept so the model can follow through on
- * the plan it already committed to instead of re-deriving one every move.
+ * One AI move remembered as an exact FEN note and the actual choice/explanation.
+ * The newest turn still receives a full position pack. Historical legal lists,
+ * repeated logs and rejected attempts would only distract from that position.
  */
 export interface Exchange {
   /** Number of moves on the board when the position pack was built. */
   ply: number;
   /**
-   * The messages this turn added to the conversation, in order, starting with
-   * the position pack. Usually one user message (plus the final assistant
-   * reply), but includes any rejected reply and correction prompt when the
-   * model had to be asked again — so the next turn replays the real exchange.
+   * The canonical memory for this turn: a past-position FEN note and an
+   * assistant reply with the chosen move and any explanation.
+   * Rejected replies and corrections are diagnostics only;
+   * replaying them would pollute later turns with invalid candidate moves.
    */
   messages: Array<{ role: 'user' | 'assistant'; content: string }>;
   /**

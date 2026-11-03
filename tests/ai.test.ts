@@ -22,6 +22,12 @@ describe('resolveMove', () => {
     }
   });
 
+  it('derives SAN from a single explicit UCI without scanning candidate analysis', () => {
+    const result = resolveMove('Consider Nf3 and d4. Final answer: {"move_uci":"e2e4"}', game());
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.move.san).toBe('e4');
+  });
+
   it('tolerates markdown fences and surrounding prose', () => {
     const chess = game();
     const raw = 'Sure! Here is my move:\n```json\n{"move_uci": "g1f3", "move_san": "Nf3"}\n```\nGood luck.';
@@ -58,6 +64,28 @@ describe('resolveMove', () => {
     );
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toContain('多个合法着法');
+  });
+
+  it.each(['think', 'thinking', 'analysis'])('ignores an explicit leading <%s> block when reading the final move', (tag) => {
+    const result = resolveMove(`<${tag}>Compare Nf3, d4 and {"move_uci":"g1f3"}.</${tag}>\ne4`, game());
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.uci).toBe('e2e4');
+  });
+
+  it('never plays a move mentioned inside an unfinished reasoning block', () => {
+    expect(resolveMove('<think>I might choose {"move_uci":"e2e4"}', game()).ok).toBe(false);
+    expect(resolveMove('<think><analysis>Check candidates.</analysis>{"move_uci":"e2e4"}', game()).ok).toBe(false);
+  });
+
+  it('still refuses ambiguous final prose after a closed reasoning block', () => {
+    const result = resolveMove('<think>Analyze the board.</think>I might play Nf3 or d4.', game());
+    expect(result.ok).toBe(false);
+  });
+
+  it('does not treat a reasoning tag inside a JSON commentary string as a block', () => {
+    const result = resolveMove('{"move_uci":"e2e4","commentary":"<think>Nf3 or d4</think>"}', game());
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.uci).toBe('e2e4');
   });
 
   it('still honours a single explicit JSON move surrounded by analysis', () => {
@@ -123,6 +151,34 @@ describe('prompt building', () => {
     expect(prompt).toContain('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1');
   });
 
+  it.each([
+    'r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1',
+    '8/P7/8/8/8/8/8/K6k w - - 0 1',
+    '4k3/8/8/8/3pP3/8/8/4K3 b - e3 0 1',
+  ])('retains every castling, promotion and en passant choice: %s', (fen) => {
+    const chess = game(fen);
+    const prompt = buildPositionPrompt(chess, { side: chess.turn(), history: [], edited: true });
+    const table = prompt.split('## LEGAL MOVES')[1].split('## ANSWER THIS TURN')[0];
+    for (const move of legalMoves(chess)) {
+      expect(table).toContain(`${move.from}${move.to}${move.promotion ?? ''}=${move.san}`);
+    }
+  });
+
+  it('puts the complete one-move output contract in the current user message', () => {
+    const chess = game();
+    const prompt = buildPositionPrompt(chess, { side: 'w', history: [], edited: false });
+    expect(prompt).toContain('{"move_uci":"<UCI>"}');
+    expect(prompt).toContain('No other move fields');
+  });
+
+  it('states the commentary contract in the current user message too', () => {
+    const prompt = buildPositionPrompt(game(), {
+      side: 'w', history: [], edited: false, commentary: true, lang: 'zh',
+    });
+    expect(prompt).toContain('"commentary":"<your chosen move and plan>"');
+    expect(prompt).toContain('Write commentary in Simplified Chinese');
+  });
+
   it('renders an ASCII board with coordinates', () => {
     const chess = game();
     const prompt = buildPositionPrompt(chess, {
@@ -170,11 +226,12 @@ describe('prompt building', () => {
     expect(prompt).toContain('the position was edited by the arbiter');
   });
 
-  it('repeats the legal move list in the correction prompt', () => {
+  it('repairs the output against the current legal table without repeating rejected analysis', () => {
     const chess = game();
-    const correction = buildCorrectionPrompt('move "e2e5" is not legal', 'raw output', chess);
+    const correction = buildCorrectionPrompt('move "e2e5" is not legal', chess);
     expect(correction).toContain('e2e5');
     expect(correction).toContain('e2e4');
-    expect(correction).toContain('Legal moves in UCI');
+    expect(correction).toContain('Legal moves (UCI=SAN)');
+    expect(correction).toContain('do not restart the analysis');
   });
 });
