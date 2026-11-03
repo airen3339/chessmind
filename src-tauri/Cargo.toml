@@ -1,6 +1,6 @@
 [package]
 name = "chessmind"
-version = "1.1.1"
+version = "1.1.2"
 description = "ChessMind - play chess against any LLM"
 authors = ["windbullet"]
 edition = "2021"
