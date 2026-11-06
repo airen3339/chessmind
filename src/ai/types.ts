@@ -139,13 +139,18 @@ export interface Decoder {
   end(): void;
 }
 
+/** Runtime adaptations learned from a specific endpoint, never saved to settings. */
+export interface ProviderRequestOptions {
+  omitMaxOutputTokens?: boolean;
+}
+
 export interface Provider {
   id: Protocol;
   label: string;
   hint: string;
   defaultBaseUrl: string;
   defaultModel: string;
-  buildRequest(cfg: AiConfig, system: string, messages: ChatMessage[], stream: boolean): StreamRequest;
+  buildRequest(cfg: AiConfig, system: string, messages: ChatMessage[], stream: boolean, options?: ProviderRequestOptions): StreamRequest;
   createDecoder(cfg: AiConfig, emit: EmitHandlers): Decoder;
   /** Parse a complete (non-streamed) JSON response body. */
   parseFull(payload: unknown, emit: EmitHandlers): void;

@@ -642,6 +642,13 @@
   word-break: break-word;
 }
 
+.coach-notice {
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+
 /* The master switch and everything it unlocks are one block: the options sit
    behind an indented rail and a slightly dimmer title, so the hierarchy is
    obvious at a glance instead of reading as six more switches. */

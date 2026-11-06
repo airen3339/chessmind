@@ -21,6 +21,130 @@ const succeed = (handlers: StreamHandlers, text = 'OK') => {
 beforeEach(() => { h.stream.mockReset(); });
 
 describe('shared provider compatibility', () => {
+  it('sends coach requests through the selected streaming Responses transport', async () => {
+    h.stream.mockImplementation(async (req: StreamRequest, handlers: StreamHandlers) => {
+      const body = JSON.parse(req.body);
+      expect(req.url).toBe(DEFAULT_AI.baseUrl + '/responses');
+      expect(body.stream).toBe(true);
+      expect(body.reasoning.effort).toBe('xhigh');
+      handlers.onEvent({ kind: 'response', status: 200 });
+      handlers.onEvent({ kind: 'chunk', text: 'data: ' + JSON.stringify({ type: 'response.output_text.delta', delta: '{"move_review":"好"}' }) + '\n\n'
+        + 'data: ' + JSON.stringify({ type: 'response.completed', response: { usage: { input_tokens: 10, output_tokens: 20 } } }) + '\n\n' });
+      handlers.onEvent({ kind: 'end' });
+    });
+    const reply = await requestCoach({ cfg: { ...DEFAULT_AI, protocol: 'openai-responses', model: 'coach-stream-test', effort: 'xhigh', stream: true },
+      system: 's', user: 'u', signal: new AbortController().signal });
+    expect(reply.ok).toBe(true);
+    expect(reply.text).toBe('{"move_review":"好"}');
+    expect(reply.usage).toMatchObject({ input: 10, output: 20 });
+    expect(h.stream).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not silently force streaming when the coach profile selects non-streaming', async () => {
+    h.stream.mockImplementation(async (req: StreamRequest, handlers: StreamHandlers) => {
+      expect(JSON.parse(req.body).stream).toBe(false);
+      handlers.onEvent({ kind: 'response', status: 200 });
+      handlers.onEvent({ kind: 'chunk', text: JSON.stringify({ status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: '好' }] }] }) });
+      handlers.onEvent({ kind: 'end' });
+    });
+    const reply = await requestCoach({ cfg: { ...DEFAULT_AI, protocol: 'openai-responses', model: 'coach-full-test', stream: false },
+      system: 's', user: 'u', signal: new AbortController().signal });
+    expect(reply.ok).toBe(true);
+  });
+
+  it('removes only an explicitly unsupported Responses limit and remembers it for the same transport', async () => {
+    const sent: Record<string, unknown>[] = [];
+    const notices: string[] = [];
+    h.stream.mockImplementation(async (req: StreamRequest, handlers: StreamHandlers) => {
+      const body = JSON.parse(req.body);
+      sent.push(body);
+      if (body.max_output_tokens !== undefined) {
+        handlers.onEvent({ kind: 'error', status: 400, message: JSON.stringify({ error: {
+          code: 'unsupported_parameter', param: '', type: 'invalid_request_error',
+          message: '暂不支持：max_output_tokens（上游硬限制尚未验证）[BPS 0.3.16]',
+        } }) });
+      } else {
+        handlers.onEvent({ kind: 'response', status: 200 });
+        handlers.onEvent({ kind: 'chunk', text: JSON.stringify({ status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: '好' }] }] }) });
+        handlers.onEvent({ kind: 'end' });
+      }
+    });
+    const config = { ...DEFAULT_AI, protocol: 'openai-responses' as const, model: 'unsupported-limit-test', stream: false, effort: 'xhigh' as const, maxTokens: 640000 };
+    const result = await runCompatibleAttempt({ ...opts(), cfg: config, onNotice: (s) => notices.push(s) });
+    expect(result.error).toBeNull();
+    expect(sent).toHaveLength(2);
+    expect(sent[0].max_output_tokens).toBe(640000);
+    expect(sent[1]).not.toHaveProperty('max_output_tokens');
+    expect(sent.every(body => (body.reasoning as { effort: string }).effort === 'xhigh')).toBe(true);
+    expect(sent[1].input).toEqual(sent[0].input);
+    expect(config.maxTokens).toBe(640000);
+    expect(result.notices?.join()).toContain('服务商默认上限');
+    expect(notices.join()).toContain('不改变思考强度');
+    const coach = await requestCoach({ cfg: config, system: 's', user: 'u', signal: new AbortController().signal });
+    expect(coach.ok).toBe(true);
+    expect(coach.notices?.join()).toContain('服务商默认上限');
+    expect(sent).toHaveLength(3);
+    expect(sent[2]).not.toHaveProperty('max_output_tokens');
+
+    sent.length = 0;
+    h.stream.mockImplementation(async (req: StreamRequest, handlers: StreamHandlers) => {
+      sent.push(JSON.parse(req.body));
+      handlers.onEvent({ kind: 'error', status: 401, message: 'Unauthorized' });
+    });
+    await runCompatibleAttempt({ ...opts(), cfg: { ...config, stream: true } });
+    expect(sent[0].max_output_tokens).toBe(640000);
+    await runCompatibleAttempt({ ...opts(), cfg: { ...config, baseUrl: 'https://other.example.com/v1' } });
+    expect(sent[1].max_output_tokens).toBe(640000);
+  });
+
+  it('only retries the omission once if the gateway continues to reject it', async () => {
+    h.stream.mockImplementation(async (_req: StreamRequest, handlers: StreamHandlers) => {
+      handlers.onEvent({ kind: 'error', status: 400, message: "Unsupported parameter: 'max_output_tokens'" });
+    });
+    const result = await runCompatibleAttempt({ ...opts(), cfg: { ...DEFAULT_AI, protocol: 'openai-responses', model: 'still-unsupported-limit', stream: false, maxTokens: 4096, effort: 'max' } });
+    expect(result.error).toContain('Unsupported parameter');
+    expect(h.stream).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    { status: 400, error: { code: 'invalid_value', param: 'max_output_tokens', message: 'max_output_tokens exceeds the allowed range' } },
+    { status: 400, error: { code: 'unsupported_parameter', param: 'temperature', message: 'temperature is unsupported; max_output_tokens is valid' } },
+    { status: 503, error: { code: 'model_not_found', message: 'No available channel for model' } },
+    { status: 401, error: { code: 'invalid_api_key', message: 'Invalid credential' } },
+  ])('does not omit the cap for a different failure: $error.code', async ({ status, error }) => {
+    const bodies: Record<string, unknown>[] = [];
+    h.stream.mockImplementation(async (req: StreamRequest, handlers: StreamHandlers) => {
+      bodies.push(JSON.parse(req.body));
+      handlers.onEvent({ kind: 'error', status, message: JSON.stringify({ error }) });
+    });
+    await runCompatibleAttempt({ ...opts(), cfg: { ...DEFAULT_AI, protocol: 'openai-responses', model: 'unrelated-' + error.code, stream: false, maxTokens: 640000, effort: 'xhigh' } });
+    expect(bodies.every(body => body.max_output_tokens === 640000)).toBe(true);
+    expect(bodies.every(body => (body.reasoning as { effort: string }).effort === 'xhigh')).toBe(true);
+    expect(h.stream).toHaveBeenCalledTimes(1);
+  });
+
+  it('describes a successful HTTP response with an empty non-streaming body', async () => {
+    h.stream.mockImplementation(async (_req: StreamRequest, handlers: StreamHandlers) => {
+      handlers.onEvent({ kind: 'response', status: 200 });
+      handlers.onEvent({ kind: 'end' });
+    });
+    const result = await runAttempt(opts());
+    expect(result.error).toContain('空的非流式响应（HTTP 200）');
+  });
+
+  it('does not repeat an incomplete streaming coach response', async () => {
+    h.stream.mockImplementation(async (_req: StreamRequest, handlers: StreamHandlers) => {
+      handlers.onEvent({ kind: 'response', status: 200 });
+      handlers.onEvent({ kind: 'chunk', text: 'data: ' + JSON.stringify({ type: 'response.incomplete', response: { incomplete_details: { reason: 'max_output_tokens' } } }) + '\n\n' });
+      handlers.onEvent({ kind: 'end' });
+    });
+    const reply = await requestCoach({ cfg: { ...DEFAULT_AI, protocol: 'openai-responses', model: 'incomplete-coach', stream: true },
+      system: 's', user: 'u', signal: new AbortController().signal });
+    expect(reply.ok).toBe(false);
+    expect(reply.error).toContain('max_output_tokens');
+    expect(h.stream).toHaveBeenCalledTimes(1);
+  });
+
   it('reuses learned reasoning support for coaching and connection tests', async () => {
     const sent: boolean[] = [];
     h.stream.mockImplementation(async (req: StreamRequest, handlers: StreamHandlers) => {

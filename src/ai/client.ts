@@ -1,6 +1,6 @@
 import { bridge } from '../bridge';
 import { getProvider } from './providers';
-import type { AiConfig, ChatMessage, EmitHandlers, Usage } from './types';
+import type { AiConfig, ChatMessage, EmitHandlers, ProviderRequestOptions, Usage } from './types';
 
 export interface AttemptResult {
   status: number | null;
@@ -11,6 +11,8 @@ export interface AttemptResult {
   usage: Usage | null;
   text: string;
   reasoning: string;
+  /** Effective parameter changes made by the compatibility layer. */
+  notices?: string[];
 }
 
 export interface AttemptCallbacks {
@@ -25,6 +27,7 @@ export async function runAttempt(opts: {
   messages: ChatMessage[];
   signal: AbortSignal;
   cb: AttemptCallbacks;
+  requestOptions?: ProviderRequestOptions;
 }): Promise<AttemptResult> {
   let reasoning = '';
   let text = '';
@@ -63,7 +66,7 @@ export async function runAttempt(opts: {
   };
 
   const provider = getProvider(opts.cfg.protocol);
-  const request = provider.buildRequest(opts.cfg, opts.system, opts.messages, opts.cfg.stream);
+  const request = provider.buildRequest(opts.cfg, opts.system, opts.messages, opts.cfg.stream, opts.requestOptions);
 
   if (!opts.cfg.stream) {
     let body = '';
@@ -86,7 +89,9 @@ export async function runAttempt(opts: {
       return {
         status,
         aborted: false,
-        error: `无法解析响应内容：${body.slice(0, 300)}`,
+        error: body.trim()
+          ? `无法解析非流式响应（HTTP ${status ?? '未知'}）：${body.slice(0, 300)}`
+          : `接口返回了空的非流式响应（HTTP ${status ?? '未知'}），没有可解析的 JSON 正文。`,
         usage,
         text,
         reasoning,

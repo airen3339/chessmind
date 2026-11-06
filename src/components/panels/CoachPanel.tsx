@@ -65,6 +65,7 @@ export function CoachPanel() {
               ? `教练没能给出简评：${summary.error ?? '请求失败'}`
               : (summary.text ?? '正在总结这局棋…')}
           </div>
+          {summary.notice && <div className="coach-notice">{summary.notice}</div>}
         </div>
       )}
 
@@ -153,6 +154,7 @@ function CoachCard({
         </section>
       )}
 
+      {entry.notice && <div className="coach-notice">{entry.notice}</div>}
       {entry.error && <div className="coach-error">教练请求失败：{entry.error}</div>}
     </div>
   );

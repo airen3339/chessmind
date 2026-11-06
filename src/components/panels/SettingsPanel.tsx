@@ -166,7 +166,7 @@ export function SettingsPanel() {
     const timeout = setTimeout(() => controller.abort(), Math.min(ai.timeoutSecs, 60) * 1000);
     try {
       const result = await runCompatibleAttempt({
-        cfg: { ...ai, stream: false, maxTokens: Math.min(ai.maxTokens, 4096), retries: 1, timeoutSecs: Math.min(ai.timeoutSecs, 60) },
+        cfg: { ...ai, maxTokens: Math.min(ai.maxTokens, 4096), retries: 1, timeoutSecs: Math.min(ai.timeoutSecs, 60) },
         system: 'You are a connection test. Reply with the single word: OK',
         messages: [{ role: 'user', content: 'Reply with the single word: OK' }],
         signal: controller.signal,
@@ -179,7 +179,7 @@ export function SettingsPanel() {
         setTestState({ kind: 'error', message: result.error.slice(0, 400) });
       } else {
         const sample = (result.text || result.reasoning || '(空响应)').trim().slice(0, 120);
-        setTestState({ kind: 'ok', message: `连接成功，模型返回：${sample}` });
+        setTestState({ kind: 'ok', message: [`连接成功，模型返回：${sample}`, ...(result.notices ?? [])].join('；') });
       }
     } catch (error) {
       if (!isCurrent()) return;

@@ -34,6 +34,7 @@ export interface CoachEntry {
   /** Read of the position; review entries only. */
   read: string | null;
   error: string | null;
+  notice?: string | null;
   elapsedMs: number;
   /** The request behind this card is still queued or in flight. */
   pending: boolean;
@@ -45,6 +46,7 @@ export interface CoachSummary {
   state: 'running' | 'done' | 'failed';
   text: string | null;
   error: string | null;
+  notice?: string | null;
 }
 
 type CoachJob =
@@ -233,12 +235,13 @@ export function createCoachSession(get: () => CoachState, set: SetCoach) {
         signal: controller.signal,
       });
       if (!isCurrent()) return;
+      const notice = reply.notices?.join('；') || null;
 
       if (job.kind === 'summary') {
         set({
           coachSummary: reply.ok
-            ? { state: 'done', text: parseSummary(reply.text), error: null }
-            : { state: 'failed', text: null, error: reply.error ?? '教练请求失败' },
+            ? { state: 'done', text: parseSummary(reply.text), error: null, notice }
+            : { state: 'failed', text: null, error: reply.error ?? '教练请求失败', notice },
         });
         return;
       }
@@ -251,6 +254,7 @@ export function createCoachSession(get: () => CoachState, set: SetCoach) {
           san: reply.ok ? hint.san : null,
           verdict: reply.ok ? hint.why || null : null,
           error: reply.ok ? null : (reply.error ?? '教练请求失败'),
+          notice,
           elapsedMs: reply.elapsedMs,
           pending: false,
         });
@@ -262,6 +266,7 @@ export function createCoachSession(get: () => CoachState, set: SetCoach) {
         : { moveReview: null, positionRead: null };
       const patch: Partial<CoachEntry> = {
         error: reply.ok ? null : (reply.error ?? '教练请求失败'),
+        notice,
         elapsedMs: reply.elapsedMs,
         pending: false,
       };

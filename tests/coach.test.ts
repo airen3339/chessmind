@@ -185,9 +185,10 @@ describe('coach parsing', () => {
 });
 
 describe('coach request settings', () => {
-  it('is non-streaming and cannot hang for longer than a minute', () => {
+  it('preserves the selected transport and cannot hang for longer than a minute', () => {
     const cfg = coachConfig({ ...DEFAULT_AI, stream: true, timeoutSecs: 300 });
-    expect(cfg.stream).toBe(false);
+    expect(cfg.stream).toBe(true);
+    expect(coachConfig({ ...DEFAULT_AI, stream: false }).stream).toBe(false);
     expect(cfg.timeoutSecs).toBe(60);
     // A short game timeout is never extended by the coach.
     expect(coachConfig({ ...DEFAULT_AI, timeoutSecs: 20 }).timeoutSecs).toBe(20);

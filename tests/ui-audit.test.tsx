@@ -39,6 +39,16 @@ afterEach(async () => {
 });
 
 describe('audit: UI event integration', () => {
+  it('tests the selected Responses transport and displays output-limit compatibility notices', async () => {
+    await act(async () => { settings.getState().updateAi({ protocol: 'openai-responses', stream: true, effort: 'xhigh' }); });
+    h.compatible.mockResolvedValue({ status: 200, aborted: false, error: null, usage: null, text: 'OK', reasoning: '', notices: ['使用服务商默认上限'] });
+    await render(createElement(SettingsPanel));
+    await clickText('测试连接');
+    expect(h.compatible.mock.calls[0][0].cfg).toMatchObject({ protocol: 'openai-responses', stream: true, effort: 'xhigh' });
+    expect(container.textContent).toContain('连接成功');
+    expect(container.textContent).toContain('使用服务商默认上限');
+  });
+
   it('consumes board Space without pausing and highlights the visual black-side cursor', async () => {
     await render(createElement(App));
     await act(async () => { game.getState().startGame({ players: { w: 'human', b: 'human' }, orientation: 'b' }); });

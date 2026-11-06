@@ -66,17 +66,17 @@ export const openaiResponses: Provider = {
   defaultBaseUrl: 'https://api.openai.com/v1',
   defaultModel: 'gpt-5',
 
-  buildRequest(cfg, system, messages, stream): StreamRequest {
+  buildRequest(cfg, system, messages, stream, options): StreamRequest {
     const body: Record<string, unknown> = {
       model: cfg.model,
       instructions: system,
       input: toInput(messages),
       stream,
-      max_output_tokens: cfg.maxTokens,
       // Chess positions are self-contained; there is no reason to let the
       // provider retain the conversation server-side.
       store: false,
     };
+    if (!options?.omitMaxOutputTokens) body.max_output_tokens = cfg.maxTokens;
     if (cfg.reasoning) {
       body.reasoning = { effort: resolveEffortText(cfg.effort, cfg.effortCustom), summary: 'auto' };
     }
