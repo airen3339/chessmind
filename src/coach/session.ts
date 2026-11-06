@@ -15,6 +15,8 @@ import {
   parseSummary,
 } from './prompt';
 import { requestCoach } from './request';
+import type { CoachReply } from './request';
+
 /**
  * One coach card about one position: the verdict on the move that was just
  * played (or the explanation the engine itself gave for it), the read of the
@@ -38,6 +40,8 @@ export interface CoachEntry {
   elapsedMs: number;
   /** The request behind this card is still queued or in flight. */
   pending: boolean;
+  /** A queued review was deliberately skipped, rather than failing at the API. */
+  skipReason?: string | null;
   /** Which paragraphs this card will end up having, so placeholders are honest. */
   expects: { verdict: boolean; read: boolean };
 }
@@ -80,18 +84,41 @@ interface CoachState {
 
 type SetCoach = (patch: Partial<CoachState> | ((state: CoachState) => Partial<CoachState>)) => void;
 
-/** A bounded, cancellable queue whose lifetime belongs to one game store. */
+/** Release the queue immediately on cancellation, even if transport cleanup is slow. */
+function waitForCoachReply(pending: Promise<CoachReply>, signal: AbortSignal): Promise<CoachReply | null> {
+  return new Promise((resolve, reject) => {
+    const onAbort = () => resolve(null);
+    if (signal.aborted) resolve(null);
+    else signal.addEventListener('abort', onAbort, { once: true });
+    // Attach both handlers even after cancellation: a late rejection must be
+    // observed, but it must never write back into a newer game or summary.
+    pending.then((reply) => {
+      signal.removeEventListener('abort', onAbort);
+      resolve(reply);
+    }, (error: unknown) => {
+      signal.removeEventListener('abort', onAbort);
+      reject(error);
+    });
+  });
+}
+
+/** A cancellable queue whose lifetime belongs to one game store. */
 export function createCoachSession(get: () => CoachState, set: SetCoach) {
   let coachQueue: CoachJob[] = [];
   let coachAbort: AbortController | null = null;
   let coachToken = 0;
   let coachEntrySeq = 0;
   let coachDraining = false;
-  let coachRunning: CoachJob['kind'] | null = null;
+  let coachRunning: CoachJob | null = null;
   function pushCoachEntry(entry: Omit<CoachEntry, 'id'>): number {
     coachEntrySeq += 1;
     const id = coachEntrySeq;
-    set((state) => ({ coachLog: [...state.coachLog, { ...entry, id }].slice(-60) }));
+    set((state) => {
+      const entries = [...state.coachLog, { ...entry, id }];
+      // Keep every pending card, including a full backlog the user chose to
+      // retain. Only completed cards outside the recent history may be pruned.
+      return { coachLog: entries.filter((item, index) => item.pending || index >= entries.length - 60) };
+    });
     const visible = new Set(get().coachLog.map((entry) => entry.id));
     coachQueue = coachQueue.filter((job) => job.kind === 'summary' || visible.has(job.entryId));
     return id;
@@ -109,33 +136,36 @@ export function createCoachSession(get: () => CoachState, set: SetCoach) {
   }
 
   function syncHintBusy(): void {
-    const busy = coachRunning === 'hint' || coachQueue.some((job) => job.kind === 'hint');
+    const busy = coachRunning?.kind === 'hint' || coachQueue.some((job) => job.kind === 'hint');
     if (get().hintBusy !== busy) set({ hintBusy: busy });
   }
 
-  /** Drop every queued or running coach request (new game, setup, pause, undo). */
-  function cancelPendingCoach(): void {
-    coachQueue = [];
+  function interruptCoachRequest(): void {
     if (coachAbort) {
       coachAbort.abort();
       coachAbort = null;
     }
     coachToken += 1;
     coachRunning = null;
+  }
+
+  /** Drop every queued or running coach request (new game, setup, pause, undo). */
+  function cancelPendingCoach(skipReason?: string): void {
+    coachQueue = [];
+    interruptCoachRequest();
     syncHintBusy();
-    dropPendingEntries();
+    if (skipReason) {
+      set((state) => ({ coachLog: state.coachLog.map((entry) => entry.pending
+        ? { ...entry, pending: false, error: null, skipReason }
+        : entry) }));
+    } else dropPendingEntries();
     if (get().coachSummary?.state === 'running') set({ coachSummary: null });
   }
 
   /** A move landed, so any pending suggestion is about a position that is gone. */
   function dropPendingHints(): void {
     coachQueue = coachQueue.filter((job) => job.kind !== 'hint');
-    if (coachRunning === 'hint') {
-      coachAbort?.abort();
-      coachAbort = null;
-      coachToken += 1;
-      coachRunning = null;
-    }
+    if (coachRunning?.kind === 'hint') interruptCoachRequest();
     syncHintBusy();
     set((state) => ({
       coachLog: state.coachLog.filter((entry) => !(entry.pending && entry.kind === 'hint')),
@@ -145,18 +175,28 @@ export function createCoachSession(get: () => CoachState, set: SetCoach) {
   function queueCoach(job: CoachJob, front = false): void {
     if (!get().coach.enabled) return;
     if (job.kind === 'summary') {
-      // End-of-game review takes priority over obsolete queued move cards.
-      cancelPendingCoach();
+      if (get().coach.skipBacklog) {
+        cancelPendingCoach('对局已结束，跳过未完成点评，优先生成整局简评');
+      } else {
+        // Summarize immediately, then resume all retained move reviews. The
+        // interrupted review restarts with the exact position it was about.
+        if (coachRunning?.kind === 'review') coachQueue.unshift(coachRunning);
+        coachQueue = coachQueue.filter((item) => item.kind === 'review');
+        interruptCoachRequest();
+        dropPendingHints();
+      }
+      // Make the summary visible while cancelled transport work unwinds.
+      set({ coachSummary: { state: 'running', text: null, error: null } });
       front = true;
     }
     if (front) coachQueue.unshift(job);
     else coachQueue.push(job);
-    while (coachQueue.length > 8) {
+    while (get().coach.skipBacklog && coachQueue.length > 8) {
       const index = coachQueue.findIndex((item) => item.kind === 'review');
       if (index < 0) break;
       const removed = coachQueue.splice(index, 1)[0];
       if (removed && removed.kind !== 'summary') {
-        patchCoachEntry(removed.entryId, { pending: false, error: '后续局面已更新，跳过积压点评' });
+        patchCoachEntry(removed.entryId, { pending: false, error: null, skipReason: '后续局面已更新，跳过积压点评' });
       }
     }
     syncHintBusy();
@@ -194,7 +234,7 @@ export function createCoachSession(get: () => CoachState, set: SetCoach) {
     const studentSide = studentSideOf(get().players);
     const controller = new AbortController();
     coachAbort = controller;
-    coachRunning = job.kind;
+    coachRunning = job;
     const token = (coachToken += 1);
     const isCurrent = () => token === coachToken && !controller.signal.aborted;
     syncHintBusy();
@@ -228,13 +268,13 @@ export function createCoachSession(get: () => CoachState, set: SetCoach) {
         });
       }
 
-      const reply = await requestCoach({
+      const reply = await waitForCoachReply(requestCoach({
         cfg: profile.config,
         system,
         user,
         signal: controller.signal,
-      });
-      if (!isCurrent()) return;
+      }), controller.signal);
+      if (!reply || !isCurrent()) return;
       const notice = reply.notices?.join('；') || null;
 
       if (job.kind === 'summary') {

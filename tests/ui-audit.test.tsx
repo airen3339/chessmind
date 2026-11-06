@@ -4,11 +4,13 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_SETTINGS } from '../src/config';
 import type { AttemptResult } from '../src/ai/client';
+import { DEFAULT_COACH } from '../src/coach/types';
 
 const h = vi.hoisted(() => ({ compatible: vi.fn() }));
 vi.mock('../src/ai/compatible', () => ({ runCompatibleAttempt: h.compatible }));
 const { App } = await import('../src/App');
 const { SettingsPanel } = await import('../src/components/panels/SettingsPanel');
+const { CoachPanel } = await import('../src/components/panels/CoachPanel');
 const { useGame: game } = await import('../src/game/store');
 const { useSettings: settings } = await import('../src/settings');
 let container: HTMLDivElement;
@@ -79,9 +81,75 @@ describe('audit: UI event integration', () => {
     const select = container.querySelector<HTMLSelectElement>('.modal select')!;
     await act(async () => { select.value = 'B'; select.dispatchEvent(new Event('change', { bubbles: true })); });
     await clickText('开启教练模式');
+    await clickText('跳过积压点评');
     await clickText('取消');
     expect(settings.getState().settings).toBe(original);
     expect(game.getState().coach.enabled).toBe(false);
+  });
+
+  it('saves the backlog switch with the new game and restores it when reopened', async () => {
+    await render(createElement(App));
+    await clickText('新对局');
+    await clickText('双人本地对弈');
+    await clickText('开启教练模式');
+    const backlogSwitch = () => [...container.querySelectorAll('[role=switch]')]
+      .find((item) => item.textContent?.includes('跳过积压点评'))!;
+    expect(backlogSwitch().getAttribute('aria-checked')).toBe('true');
+    await clickText('跳过积压点评');
+    expect(backlogSwitch().getAttribute('aria-checked')).toBe('false');
+    expect(settings.getState().settings.coach.skipBacklog).toBe(true);
+    await clickText('开始对局');
+    await clickText('确认结束当前对局并开始');
+    expect(game.getState().coach.skipBacklog).toBe(false);
+    expect(settings.getState().settings.coach.skipBacklog).toBe(false);
+    await clickText('新对局');
+    expect(backlogSwitch().getAttribute('aria-checked')).toBe('false');
+    await clickText('取消');
+  });
+
+  it.each(['failed', 'missing'] as const)('lets the user generate a %s summary from a finished game', async (state) => {
+    const result: AttemptResult = { status: 401, aborted: false, error: 'authentication failed', usage: null, text: '', reasoning: '' };
+    h.compatible.mockResolvedValueOnce(result);
+    await act(async () => {
+      game.getState().startGame({ players: { w: 'human', b: 'human' },
+        coach: { ...DEFAULT_COACH, enabled: true, opponentMoves: false, position: false },
+        fen: 'k7/8/1K6/8/8/8/8/7R w - - 0 38' });
+      game.getState().humanMove('h1', 'h8');
+    });
+    expect(game.getState().coachSummary?.state).toBe('failed');
+    if (state === 'missing') game.setState({ coachSummary: null });
+    let finish!: (reply: AttemptResult) => void;
+    h.compatible.mockImplementationOnce(() => new Promise<AttemptResult>((resolve) => { finish = resolve; }));
+    await render(createElement(CoachPanel));
+    expect(container.textContent).toContain(state === 'failed' ? 'authentication failed' : '本局尚未生成简评');
+    await clickText(state === 'failed' ? '重试简评' : '生成对局简评');
+    expect(container.querySelector('.coach-summary')?.getAttribute('data-state')).toBe('running');
+    expect(container.textContent).toContain('正在总结这局棋');
+    expect(container.querySelector('.coach-summary button')).toBeNull();
+    expect(h.compatible).toHaveBeenCalledTimes(2);
+    expect(h.compatible.mock.calls[1][0].messages[0].content).toContain('38. Rh8#');
+    await act(async () => { finish({ status: 200, aborted: false, error: null, usage: null, text: '{"summary":"最终简评"}', reasoning: '' }); });
+    expect(container.textContent).toContain('最终简评');
+    expect(container.querySelector('.coach-summary')?.getAttribute('data-state')).toBe('done');
+  });
+
+  it('keeps the final move visible and displays skipped coaching without an API failure', async () => {
+    let finishOld!: (reply: AttemptResult) => void;
+    h.compatible.mockImplementationOnce(() => new Promise<AttemptResult>((resolve) => { finishOld = resolve; }))
+      .mockResolvedValue({ status: 200, aborted: false, error: null, usage: null, text: '{"summary":"终局总结"}', reasoning: '' });
+    await act(async () => {
+      game.getState().startGame({ players: { w: 'human', b: 'human' }, coach: { ...DEFAULT_COACH, enabled: true },
+        fen: 'k7/8/1K6/8/8/8/8/7R w - - 0 38' });
+      game.getState().humanMove('h1', 'h8');
+    });
+    await render(createElement(CoachPanel));
+    expect(container.textContent).toContain('第 38 回合');
+    expect(container.textContent).toContain('Rh8#');
+    expect(container.textContent).toContain('已跳过');
+    expect(container.textContent).toContain('终局总结');
+    expect(container.querySelector('.coach-error')).toBeNull();
+    await act(async () => { finishOld({ status: 200, aborted: false, error: null, usage: null, text: '{"move_review":"过期点评"}', reasoning: '' }); });
+    expect(container.textContent).not.toContain('过期点评');
   });
 
   it('ignores a stale connection result after changing the selected profile', async () => {

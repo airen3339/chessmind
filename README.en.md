@@ -14,7 +14,7 @@ Play chess against large language models.
 
 - **Compatible APIs**: OpenAI Chat Completions, OpenAI Responses, Anthropic Messages, native Gemini API.
 - **Four game modes**: play White, play Black, AI vs AI, local two-player.
-- **Coach mode**: per game, pick any of chain of thought, own-move explanations, per-move critique, position reads, on-demand guidance and a final review, with its own model.
+- **Coach mode**: per game, pick any of chain of thought, own-move explanations, per-move critique, position reads, on-demand guidance and a final review, with its own model. Disable backlog skipping to retain all pending reviews; the final review takes priority and can be retried if it fails.
 - **Live reasoning**: shows the model's chain of thought when the provider returns it, with per-move latency, HTTP status and token usage.
 - **Position editor**: set up a position before the game or edit it mid-game, with FEN import and export.
 - **Multiple profiles**: save several API profiles; in AI vs AI each side can run a different model.
@@ -26,15 +26,15 @@ Get either build from [Releases](../../releases); both are identical in features
 
 | File | Use case |
 | --- | --- |
-| `ChessMind-1.1.3-win-x64-setup.exe` | One-click installer |
-| `ChessMind-1.1.3-win-x64.zip` | Portable archive, unpack and run |
+| `ChessMind-1.1.4-win-x64-setup.exe` | One-click installer |
+| `ChessMind-1.1.4-win-x64.zip` | Portable archive, unpack and run |
 
 See [CHANGELOG.md](CHANGELOG.md) for what changed in each version.
 
 Each file ships with a matching `.sha256`:
 
 ```powershell
-Get-FileHash .\ChessMind-1.1.3-win-x64.zip -Algorithm SHA256
+Get-FileHash .\ChessMind-1.1.4-win-x64.zip -Algorithm SHA256
 ```
 
 **Requirements**: Windows 10 1803+ or Windows 11, with the WebView2 runtime (normally already present).

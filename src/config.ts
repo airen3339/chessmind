@@ -190,6 +190,7 @@ function sanitizeCoach(raw: unknown, profiles: AiProfile[]): CoachConfig {
     position: bool(raw.position, DEFAULT_COACH.position),
     hint: bool(raw.hint, DEFAULT_COACH.hint),
     summary: bool(raw.summary, DEFAULT_COACH.summary),
+    skipBacklog: bool(raw.skipBacklog, DEFAULT_COACH.skipBacklog),
     profileId,
   };
 }

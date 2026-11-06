@@ -45,7 +45,7 @@ export const tauriBridge: Bridge = {
     try {
       return await invoke<string>('app_version');
     } catch {
-      return '1.1.3';
+      return '1.1.4';
     }
   },
 };

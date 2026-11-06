@@ -22,6 +22,8 @@ export interface CoachConfig {
   hint: boolean;
   /** Whole-game review after a natural end (checkmate / draw). */
   summary: boolean;
+  /** Skip older queued reviews when more than eight are waiting. */
+  skipBacklog: boolean;
   /**
    * Saved profile used for coach requests. Empty means "resolve it": follow the
    * AI of this game when there is one, otherwise the profile being edited.
@@ -38,13 +40,14 @@ export const COACH_DISABLED: CoachConfig = {
   position: false,
   hint: false,
   summary: false,
+  skipBacklog: false,
   profileId: '',
 };
 
 /**
  * Defaults for a fresh install. The master switch starts off so nothing is sent
  * anywhere until the user asks for a coach; the six options start on so turning
- * coach mode on is one click.
+ * coach mode on is one click. Backlog skipping is enabled by default.
  */
 export const DEFAULT_COACH: CoachConfig = {
   enabled: false,
@@ -54,6 +57,7 @@ export const DEFAULT_COACH: CoachConfig = {
   position: true,
   hint: true,
   summary: true,
+  skipBacklog: true,
   profileId: '',
 };
 
@@ -96,6 +100,11 @@ export const COACH_OPTIONS: CoachOption[] = [
     key: 'summary',
     label: '对局简评',
     sub: '对局正常结束后给整局复盘与改进建议',
+  },
+  {
+    key: 'skipBacklog',
+    label: '跳过积压点评',
+    sub: '开启时最多保留 8 条待处理点评，终局跳过未完成点评；关闭后按顺序补全，终局先生成简评再继续点评',
   },
 ];
 

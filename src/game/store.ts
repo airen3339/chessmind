@@ -163,6 +163,8 @@ export interface GameStore {
   finishGame(reason: ResultReason): void;
   /** Ask the coach for one suggested move in the current position. */
   askHint(): void;
+  /** Regenerate the whole-game review after a natural end or a failed request. */
+  retryCoachSummary(): void;
   retryAi(): void;
   playRandomMove(): void;
   abortAi(): void;
@@ -228,6 +230,18 @@ export const useGame = create<GameStore>((set, get) => {
     getEngine: () => engine, setEngine: (chess) => { engine = chess; },
     abortAiInternal, clearExchanges, cancelPendingCoach, scheduleAi, resolveGameProfiles,
   });
+
+  function queueGameSummary(): void {
+    const state = get();
+    if (state.mode !== 'finished' || !state.result || state.result.reason === 'resigned'
+      || !state.coach.enabled || !state.coach.summary || state.moveLog.length === 0) return;
+    queueCoach({
+      kind: 'summary',
+      startFen: state.anchor.fen,
+      sanLine: moveLogToSan(state.moveLog, state.anchor.logIndex),
+      result: state.result.text,
+    });
+  }
 
   function applyMove(
     from: string,
@@ -325,14 +339,7 @@ export const useGame = create<GameStore>((set, get) => {
         }
       }
     }
-    if (result && coach.enabled && coach.summary) {
-      queueCoach({
-        kind: 'summary',
-        startFen: state.anchor.fen,
-        sanLine: moveLogToSan(moveLog, state.anchor.logIndex),
-        result: result.text,
-      });
-    }
+    if (result) queueGameSummary();
     return true;
   }
 
@@ -687,11 +694,10 @@ export const useGame = create<GameStore>((set, get) => {
     },
 
     finishGame(reason) {
+      const state = get();
+      if (state.mode !== 'playing' && state.mode !== 'paused') return;
       abortAiInternal();
       cancelPendingCoach();
-      const state = get();
-      if (state.mode === 'idle' || state.mode === 'setup') return;
-      if (state.mode === 'finished') return;
       // "resigned" is the UI's "结束对局": the side that ended it concedes.
       const winner: Side | null = reason === 'resigned' ? (state.turn === 'w' ? 'b' : 'w') : null;
       const result: GameResult = {
@@ -708,6 +714,17 @@ export const useGame = create<GameStore>((set, get) => {
         turn: state.turn,
       });
       set({ thinking: false, aiTurn: null, aiError: null });
+    },
+
+    retryCoachSummary() {
+      const state = get();
+      if (state.mode !== 'finished' || !state.result || state.result.reason === 'resigned'
+        || !state.coach.enabled || !state.coach.summary || state.moveLog.length === 0
+        || state.coachSummary?.state === 'running') return;
+      const pinned = state.gameProfiles.coach;
+      const saved = useSettings.getState().settings.aiProfiles.find((profile) => profile.id === pinned.id);
+      if (saved) set({ gameProfiles: { ...state.gameProfiles, coach: { ...saved, config: { ...saved.config } } } });
+      queueGameSummary();
     },
 
     askHint() {

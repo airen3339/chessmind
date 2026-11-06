@@ -14,7 +14,7 @@
 
 - **兼容接口**：OpenAI Chat Completions、OpenAI Responses、Anthropic Messages、Gemini 原生 API。
 - **四种对局模式**：我执白、我执黑、AI 对 AI、双人本地。
-- **教练模式**：开局时可选思维链、着法解释、逐手点评、局势解读、随时申请指导、终局简评，教练模型可以单独指定。
+- **教练模式**：开局时可选思维链、着法解释、逐手点评、局势解读、随时申请指导、终局简评，教练模型可以单独指定。可关闭「跳过积压点评」保留所有待点评任务；终局优先生成简评，失败可重试。
 - **实时思维链**：模型支持时显示推理过程，展示每一步的耗时、HTTP 状态和 token 用量。
 - **摆棋编辑器**：开局前或对局中途都能摆，支持载入与复制 FEN。
 - **多套配置**：保存多套API接口配置，AI 对 AI 时两边可以用不同模型互下。
@@ -26,15 +26,15 @@
 
 | 文件 | 场景 |
 | --- | --- |
-| `ChessMind-1.1.3-win-x64-setup.exe` | 一键安装包 |
-| `ChessMind-1.1.3-win-x64.zip` | 免安装压缩包，解压即用 |
+| `ChessMind-1.1.4-win-x64-setup.exe` | 一键安装包 |
+| `ChessMind-1.1.4-win-x64.zip` | 免安装压缩包，解压即用 |
 
 各版本的改动记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 每个文件都配了 `.sha256`，下载后可校验：
 
 ```powershell
-Get-FileHash .\ChessMind-1.1.3-win-x64.zip -Algorithm SHA256
+Get-FileHash .\ChessMind-1.1.4-win-x64.zip -Algorithm SHA256
 ```
 
 **系统要求**：Windows 10 1803+ 或 Windows 11，需要 WebView2 运行时（通常系统自带）。

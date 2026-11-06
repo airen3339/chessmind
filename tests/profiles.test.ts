@@ -88,17 +88,19 @@ describe('coach settings', () => {
     expect(settings.coach.position).toBe(true);
     expect(settings.coach.hint).toBe(true);
     expect(settings.coach.summary).toBe(true);
+    expect(settings.coach.skipBacklog).toBe(true);
     expect(settings.coach.profileId).toBe('');
   });
 
   it('keeps a saved selection and every switch', () => {
     const settings = sanitizeSettings({
       aiProfiles: [profile('a', 'A'), profile('b', 'B')],
-      coach: { enabled: true, opponentMoves: false, profileId: 'b' },
+      coach: { enabled: true, opponentMoves: false, skipBacklog: false, profileId: 'b' },
     });
     expect(settings.coach.enabled).toBe(true);
     expect(settings.coach.opponentMoves).toBe(false);
     expect(settings.coach.position).toBe(true);
+    expect(settings.coach.skipBacklog).toBe(false);
     expect(settings.coach.profileId).toBe('b');
   });
 
@@ -125,5 +127,10 @@ describe('coach settings', () => {
   it('discards unknown coach keys', () => {
     const settings = sanitizeSettings({ coach: { enabled: true, nonsense: 1 } });
     expect(settings.coach).not.toHaveProperty('nonsense');
+  });
+
+  it('keeps backlog skipping enabled for older or malformed settings', () => {
+    expect(sanitizeSettings({ coach: { enabled: true } }).coach.skipBacklog).toBe(true);
+    expect(sanitizeSettings({ coach: { skipBacklog: 'false' } }).coach.skipBacklog).toBe(true);
   });
 });

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef } from 'react';
-import { GraduationCap, Lightbulb, MessageSquareQuote, TrendingUp, Trophy } from 'lucide-react';
+import { GraduationCap, Lightbulb, MessageSquareQuote, RotateCw, TrendingUp, Trophy } from 'lucide-react';
 import { COACH_OPTIONS } from '../../coach/types';
 import type { CoachEntry } from '../../game/store';
 import { useGame } from '../../game/store';
@@ -13,6 +13,10 @@ export function CoachPanel() {
   const coach = useGame((s) => s.coach);
   const log = useGame((s) => s.coachLog);
   const summary = useGame((s) => s.coachSummary);
+  const mode = useGame((s) => s.mode);
+  const result = useGame((s) => s.result);
+  const moveCount = useGame((s) => s.moveLog.length);
+  const retryCoachSummary = useGame((s) => s.retryCoachSummary);
   const players = useGame((s) => s.players);
   const profile = useGame((s) => s.gameProfiles.coach);
   const chipsRef = useRef<HTMLDivElement>(null);
@@ -23,8 +27,10 @@ export function CoachPanel() {
     if (scroller instanceof HTMLElement) scroller.scrollTop = 0;
   }, [log.length, summary?.state]);
 
-  const active = useMemo(() => COACH_OPTIONS.filter((option) => coach[option.key]), [coach]);
+  const active = useMemo(() => COACH_OPTIONS.filter((option) => option.key !== 'skipBacklog' && coach[option.key]), [coach]);
   const busy = log.some((entry) => entry.pending) || summary?.state === 'running';
+  const canSummarize = mode === 'finished' && result && result.reason !== 'resigned'
+    && coach.enabled && coach.summary && moveCount > 0;
 
   return (
     <>
@@ -52,20 +58,25 @@ export function CoachPanel() {
         )}
       </div>
 
-      {summary && (
-        <div className="coach-summary" data-state={summary.state}>
+      {(summary || canSummarize) && (
+        <div className="coach-summary" data-state={summary?.state ?? 'missing'}>
           <div className="thinking-head">
             <Trophy size={13} /> 对局简评
-            {summary.state === 'running' && (
+            {summary?.state === 'running' && (
               <span className="spinner" style={{ marginLeft: 'auto' }} />
             )}
           </div>
           <div className="coach-summary-body">
-            {summary.state === 'failed'
+            {summary?.state === 'failed'
               ? `教练没能给出简评：${summary.error ?? '请求失败'}`
-              : (summary.text ?? '正在总结这局棋…')}
+              : (summary?.text ?? (summary ? '正在总结这局棋…' : '本局尚未生成简评，可根据完整棋谱生成。'))}
           </div>
-          {summary.notice && <div className="coach-notice">{summary.notice}</div>}
+          {summary?.notice && <div className="coach-notice">{summary.notice}</div>}
+          {canSummarize && (!summary || summary.state === 'failed') && (
+            <button type="button" className="btn btn--sm" onClick={retryCoachSummary}>
+              <RotateCw size={12} /> {summary ? '重试简评' : '生成对局简评'}
+            </button>
+          )}
         </div>
       )}
 
@@ -111,6 +122,8 @@ function CoachCard({
             </>
           ) : entry.error ? (
             '失败'
+          ) : entry.skipReason ? (
+            '已跳过'
           ) : (
             `${(entry.elapsedMs / 1000).toFixed(1)}s`
           )}
@@ -155,6 +168,7 @@ function CoachCard({
       )}
 
       {entry.notice && <div className="coach-notice">{entry.notice}</div>}
+      {entry.skipReason && <div className="coach-notice">{entry.skipReason}</div>}
       {entry.error && <div className="coach-error">教练请求失败：{entry.error}</div>}
     </div>
   );
